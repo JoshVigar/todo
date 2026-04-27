@@ -293,8 +293,17 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 .spark-labels .spark-label.today .spark-day { color: #3fb950; font-weight: 700; }
 .spark-labels .spark-label.today .spark-date { color: #3fb950; }
 .spark-total {
-  float: right; color: #8b949e; font-weight: 500;
-  text-transform: none; letter-spacing: 0; font-size: 11px;
+  float: right; margin-right: 8px;
+  display: inline-flex; align-items: baseline; gap: 4px;
+  text-transform: none; letter-spacing: 0;
+}
+.spark-total-num {
+  font-size: 14px; font-weight: 800; color: #3fb950;
+  font-variant-numeric: tabular-nums;
+}
+.spark-total-label {
+  font-size: 10px; color: #6e7681; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.06em;
 }
 .cmp-section { display: flex; flex-direction: column; }
 .cmp-row {
@@ -1024,7 +1033,7 @@ def render_workdays_sparkline():
     bar_w = slot_w * 0.55
     baseline = chart_h - 1  # leave 1px for stroke at the bottom
 
-    bars, points = [], []
+    bars, points, hover_zones = [], [], []
     for i, (d, v) in enumerate(zip(days, values)):
         cx = i * slot_w + slot_w / 2
         x = cx - bar_w / 2
@@ -1043,6 +1052,15 @@ def render_workdays_sparkline():
             f'height="{max(h, 1.5):.2f}" fill="{fill}" rx="1.5" ry="1.5"/>'
         )
         points.append(f"{cx:.2f},{y:.2f}")
+        # Full-column transparent hover zone gives a generous hit target,
+        # especially for empty days where the bar is just 1.5px tall.
+        label = f"{d.strftime('%a %b %-d')} — {v} done" if v else f"{d.strftime('%a %b %-d')} — nothing yet"
+        hover_zones.append(
+            f'<rect x="{i * slot_w:.2f}" y="0" width="{slot_w:.2f}" '
+            f'height="{chart_h:.0f}" fill="transparent">'
+            f'<title>{label}</title>'
+            f'</rect>'
+        )
 
     trendline = (
         f'<polyline points="{" ".join(points)}" fill="none" '
@@ -1060,6 +1078,7 @@ def render_workdays_sparkline():
         f'<svg class="spark-svg" viewBox="0 0 {chart_w:.0f} {chart_h:.0f}" '
         f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'
         f'{"".join(bars)}{trendline}{point_dots}'
+        f'{"".join(hover_zones)}'
         f'</svg>'
     )
 
@@ -1076,7 +1095,11 @@ def render_workdays_sparkline():
     color = SECTION_COLORS["completed today"]
     return (
         f'<div class="section-header" style="border-left-color:{color}">'
-        f'Last 10 workdays <span class="spark-total">{total} done</span>'
+        f'Last 10 workdays '
+        f'<span class="spark-total">'
+        f'<span class="spark-total-num">{total}</span>'
+        f'<span class="spark-total-label">done</span>'
+        f'</span>'
         f'</div>\n'
         f'{svg}'
         f'<div class="spark-labels">{"".join(labels)}</div>\n'
