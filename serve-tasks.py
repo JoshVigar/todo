@@ -279,31 +279,19 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .completed-anchor { margin-top: 0; }
 }
-.spark-grid {
+.spark-svg { display: block; width: 100%; height: 64px; padding: 4px 4px 0; }
+.spark-labels {
   display: grid; grid-template-columns: repeat(10, 1fr);
-  gap: 4px; padding: 6px 4px 2px;
+  padding: 2px 4px 0;
 }
-.spark-col { display: flex; flex-direction: column; align-items: stretch; gap: 3px; }
-.spark-cell {
-  height: 32px; border-radius: 4px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700; color: #e6edf3;
-  border: 1px solid rgba(63, 185, 80, 0.25);
-}
-.spark-cell.empty {
-  background: #1c2128; border-color: #30363d; color: transparent;
-}
-.spark-cell.today {
-  outline: 2px solid #3fb950; outline-offset: 1px;
-}
-.spark-label {
+.spark-labels .spark-label {
   display: flex; flex-direction: column; align-items: center; gap: 0;
-  font-size: 9px; color: #6e7681;
-  text-transform: uppercase; letter-spacing: 0.03em; line-height: 1.2;
+  font-size: 9px; color: #6e7681; line-height: 1.2;
+  text-transform: uppercase; letter-spacing: 0.03em;
 }
-.spark-date { font-size: 8px; color: #484f58; }
-.spark-col:has(.spark-cell.today) .spark-day { color: #3fb950; font-weight: 700; }
-.spark-col:has(.spark-cell.today) .spark-date { color: #3fb950; }
+.spark-labels .spark-date { font-size: 8px; color: #484f58; }
+.spark-labels .spark-label.today .spark-day { color: #3fb950; font-weight: 700; }
+.spark-labels .spark-label.today .spark-date { color: #3fb950; }
 .spark-total {
   float: right; color: #8b949e; font-weight: 500;
   text-transform: none; letter-spacing: 0; font-size: 11px;
@@ -1029,39 +1017,69 @@ def render_workdays_sparkline():
     peak = max(values) if any(values) else 1
     total = sum(values)
     weekday_abbr = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-    cells = []
-    for d, v in zip(days, values):
+
+    n = len(days)
+    chart_w, chart_h = 200.0, 50.0  # SVG viewBox; scales to container width
+    slot_w = chart_w / n
+    bar_w = slot_w * 0.55
+    baseline = chart_h - 1  # leave 1px for stroke at the bottom
+
+    bars, points = [], []
+    for i, (d, v) in enumerate(zip(days, values)):
+        cx = i * slot_w + slot_w / 2
+        x = cx - bar_w / 2
+        h = (v / peak) * (chart_h - 4) if peak else 0
+        y = baseline - h
         is_today = d == today
         if v == 0:
-            cell_cls = "spark-cell empty"
-            cell_style = ""
+            fill = "#30363d"
+        elif is_today:
+            fill = "#3fb950"
         else:
-            intensity = v / peak
-            # Map intensity 0..1 to alpha bands so a 1-task day still reads as "something happened"
-            alpha_bg = 0.18 + intensity * 0.55
-            alpha_brd = 0.30 + intensity * 0.35
-            cell_cls = "spark-cell"
-            cell_style = (
-                f' style="background:rgba(63,185,80,{alpha_bg:.2f});'
-                f'border-color:rgba(63,185,80,{alpha_brd:.2f})"'
-            )
-        if is_today:
-            cell_cls += " today"
-        cells.append(
-            f'<div class="spark-col">'
-            f'<div class="{cell_cls}"{cell_style}>{v if v else ""}</div>'
-            f'<div class="spark-label">'
+            alpha = 0.30 + (v / peak) * 0.45
+            fill = f"rgba(63,185,80,{alpha:.2f})"
+        bars.append(
+            f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_w:.2f}" '
+            f'height="{max(h, 1.5):.2f}" fill="{fill}" rx="1.5" ry="1.5"/>'
+        )
+        points.append(f"{cx:.2f},{y:.2f}")
+
+    trendline = (
+        f'<polyline points="{" ".join(points)}" fill="none" '
+        f'stroke="#58a6ff" stroke-width="1.5" stroke-linecap="round" '
+        f'stroke-linejoin="round" opacity="0.85" '
+        f'vector-effect="non-scaling-stroke"/>'
+    )
+    point_dots = "".join(
+        f'<circle cx="{p.split(",")[0]}" cy="{p.split(",")[1]}" r="1.5" '
+        f'fill="#58a6ff" opacity="0.9"/>'
+        for p in points
+    )
+
+    svg = (
+        f'<svg class="spark-svg" viewBox="0 0 {chart_w:.0f} {chart_h:.0f}" '
+        f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'
+        f'{"".join(bars)}{trendline}{point_dots}'
+        f'</svg>'
+    )
+
+    labels = []
+    for d in days:
+        cls = "spark-label today" if d == today else "spark-label"
+        labels.append(
+            f'<div class="{cls}">'
             f'<span class="spark-day">{weekday_abbr[d.weekday()]}</span>'
             f'<span class="spark-date">{d.day}</span>'
             f'</div>'
-            f'</div>'
         )
+
     color = SECTION_COLORS["completed today"]
     return (
         f'<div class="section-header" style="border-left-color:{color}">'
         f'Last 10 workdays <span class="spark-total">{total} done</span>'
         f'</div>\n'
-        f'<div class="spark-grid">{"".join(cells)}</div>\n'
+        f'{svg}'
+        f'<div class="spark-labels">{"".join(labels)}</div>\n'
     )
 
 
