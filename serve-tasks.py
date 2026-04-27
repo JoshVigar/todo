@@ -424,7 +424,7 @@ document.addEventListener('click', function(e) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(done_td.dataset.id)})
-    });
+    }).then(_refreshTasks);
     return;
   }
 
@@ -439,7 +439,7 @@ document.addEventListener('click', function(e) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(num_td.dataset.id)})
-    });
+    }).then(_refreshTasks);
     return;
   }
 
@@ -1220,17 +1220,27 @@ def _build_dashboard_body(data, week):
 
 
 def _build_classic_body(data, week):
-    """Original single-column view: every section as a full table, stacked, no grid or counts strip."""
-    parts = []
+    """Single-column view: counts strip + each section wrapped in a task-card, stacked."""
+    parts = [render_counts_strip(data)]
+
+    def card(html, variant=""):
+        if not html:
+            return ""
+        cls = "task-card" + (f" {variant}" if variant else "")
+        return f'<div class="{cls}">{html}</div>'
+
+    CARD_VARIANTS = {"Today's Focus": "focus", "High Priority": "high-priority"}
     for section in data.get("sections", []):
         stype = section.get("type", "core")
         title = section.get("title", "")
         tasks = section.get("tasks", [])
         if stype == "goalie":
-            parts.append(render_goalie_section(title, tasks))
+            parts.append(card(render_goalie_section(title, tasks)))
         else:
-            parts.append(render_core_section(title, tasks, week))
-    parts.append(render_completed(data.get("completed_today", [])))
+            parts.append(card(render_core_section(title, tasks, week), variant=CARD_VARIANTS.get(title, "")))
+    completed_html = render_completed(data.get("completed_today", []))
+    if completed_html:
+        parts.append(card(completed_html))
     if data.get("updated"):
         parts.append(f'<p class="counts" style="margin-top:16px;color:#484f58">Updated {h(data["updated"])}</p>\n')
     return "".join(parts)
