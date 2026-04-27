@@ -280,14 +280,14 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
   .completed-anchor { margin-top: 0; }
 }
 .spark-grid {
-  display: grid; grid-template-columns: repeat(5, 1fr);
-  gap: 6px; padding: 6px 4px 2px;
+  display: grid; grid-template-columns: repeat(10, 1fr);
+  gap: 4px; padding: 6px 4px 2px;
 }
-.spark-col { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.spark-col { display: flex; flex-direction: column; align-items: stretch; gap: 3px; }
 .spark-cell {
-  height: 38px; border-radius: 5px;
+  height: 32px; border-radius: 4px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 13px; font-weight: 700; color: #e6edf3;
+  font-size: 11px; font-weight: 700; color: #e6edf3;
   border: 1px solid rgba(63, 185, 80, 0.25);
 }
 .spark-cell.empty {
@@ -297,11 +297,11 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
   outline: 2px solid #3fb950; outline-offset: 1px;
 }
 .spark-label {
-  display: flex; justify-content: center; align-items: baseline; gap: 4px;
-  font-size: 10px; color: #6e7681;
-  text-transform: uppercase; letter-spacing: 0.04em;
+  display: flex; flex-direction: column; align-items: center; gap: 0;
+  font-size: 9px; color: #6e7681;
+  text-transform: uppercase; letter-spacing: 0.03em; line-height: 1.2;
 }
-.spark-date { font-size: 9px; color: #484f58; }
+.spark-date { font-size: 8px; color: #484f58; }
 .spark-col:has(.spark-cell.today) .spark-day { color: #3fb950; font-weight: 700; }
 .spark-col:has(.spark-cell.today) .spark-date { color: #3fb950; }
 .spark-total {
@@ -1023,7 +1023,7 @@ def last_n_workdays(today, n=5):
 
 def render_workdays_sparkline():
     today = datetime.date.today()
-    days = last_n_workdays(today, 5)
+    days = last_n_workdays(today, 10)
     counts = compute_completions(days)
     values = [counts.get(d.isoformat(), 0) for d in days]
     peak = max(values) if any(values) else 1
@@ -1059,7 +1059,7 @@ def render_workdays_sparkline():
     color = SECTION_COLORS["completed today"]
     return (
         f'<div class="section-header" style="border-left-color:{color}">'
-        f'Last 5 workdays <span class="spark-total">{total} done</span>'
+        f'Last 10 workdays <span class="spark-total">{total} done</span>'
         f'</div>\n'
         f'<div class="spark-grid">{"".join(cells)}</div>\n'
     )
