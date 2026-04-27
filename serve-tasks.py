@@ -286,10 +286,10 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 }
 .spark-labels .spark-label {
   display: flex; flex-direction: column; align-items: center; gap: 0;
-  font-size: 9px; color: #6e7681; line-height: 1.2;
+  font-size: 9px; color: #b1bac4; line-height: 1.2;
   text-transform: uppercase; letter-spacing: 0.03em;
 }
-.spark-labels .spark-date { font-size: 8px; color: #484f58; }
+.spark-labels .spark-date { font-size: 8px; color: #8b949e; }
 .spark-labels .spark-label.today .spark-day { color: #3fb950; font-weight: 700; }
 .spark-labels .spark-label.today .spark-date { color: #3fb950; }
 .spark-total {
