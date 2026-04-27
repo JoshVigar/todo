@@ -58,6 +58,7 @@ STATE_MARKER = {
     "waiting":     "[~]",
     "blocked":     "[!]",
     "done":        "[x]",
+    "cancelled":   "[/]",
 }
 
 PRI_LABEL = {"P1": "P1 🔴", "P2": "P2 🟠", "P3": "P3 🟡", "P4": "P4 🔵", "P5": "P5 ⏸️"}
@@ -185,6 +186,26 @@ tr[draggable="true"]:active { cursor: grabbing; }
 tr.dragging { opacity: 0.3; }
 tr.drag-over-top > td { border-top: 2px solid #388bfd !important; }
 tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
+#ctx-menu {
+  position: fixed; display: none; z-index: 200;
+  background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  min-width: 180px; padding: 4px 0; font-size: 12px;
+}
+#ctx-menu.open { display: block; }
+#ctx-menu .ctx-header {
+  padding: 6px 12px 4px; color: #8b949e; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid #30363d;
+}
+#ctx-menu .ctx-item {
+  padding: 7px 12px; cursor: pointer; color: #e6edf3;
+}
+#ctx-menu .ctx-item:hover { background: #1c2128; }
+#ctx-menu .ctx-item.disabled { color: #484f58; cursor: default; }
+#ctx-menu .ctx-item.disabled:hover { background: transparent; }
+#ctx-menu .ctx-divider { height: 1px; background: #30363d; margin: 4px 0; }
+#ctx-menu .ctx-item.danger { color: #f85149; }
+#ctx-menu .ctx-item.danger:hover { background: rgba(248, 81, 73, 0.12); }
 """
 
 SCRIPT = """\
@@ -282,7 +303,7 @@ document.addEventListener('click', function(e) {
 
 // Sort button
 document.getElementById('sort-btn').addEventListener('click', function() {
-  fetch('/sort', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+  fetch('/sort', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(_refreshTasks);
 });
 
 // Add button + modal
@@ -362,7 +383,7 @@ document.addEventListener('drop', function(e) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({from: _dragNum, to: toNum, before: before})
-  });
+  }).then(_refreshTasks);
 });
 
 // Scroll-preserving auto-refresh (updates both content and styles).
@@ -394,6 +415,50 @@ function _refreshTasks() {
 setInterval(_refreshTasks, 2000);
 // Refresh immediately on regaining focus so you see fresh data as soon as you switch back.
 window.addEventListener('focus', _refreshTasks);
+
+// Right-click context menu — move tasks between sections without dragging
+var _ctxTaskId = null;
+document.addEventListener('contextmenu', function(e) {
+  var tr = e.target.closest('tr[data-id]');
+  if (!tr) return;
+  e.preventDefault();
+  _ctxTaskId = parseInt(tr.dataset.id);
+  var menu = document.getElementById('ctx-menu');
+  // Use clientX/clientY because the menu is position:fixed (viewport-relative).
+  // pageX/pageY include scroll offset and would push the menu below the click.
+  var x = Math.min(e.clientX, window.innerWidth - 200);
+  var y = Math.min(e.clientY, window.innerHeight - 220);
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  menu.classList.add('open');
+});
+document.addEventListener('click', function(e) {
+  var item = e.target.closest('#ctx-menu .ctx-item');
+  if (item && !item.classList.contains('disabled') && _ctxTaskId !== null) {
+    var endpoint, payload;
+    if (item.dataset.action === 'cancel') {
+      endpoint = '/cancel';
+      payload = {id: _ctxTaskId};
+    } else {
+      endpoint = '/move-section';
+      payload = {id: _ctxTaskId, section: item.dataset.section};
+    }
+    fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    }).then(_refreshTasks);
+    document.getElementById('ctx-menu').classList.remove('open');
+    _ctxTaskId = null;
+    return;
+  }
+  if (!e.target.closest('#ctx-menu')) {
+    document.getElementById('ctx-menu').classList.remove('open');
+  }
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') document.getElementById('ctx-menu').classList.remove('open');
+});
 """
 
 # ---------------------------------------------------------------------------
@@ -501,7 +566,8 @@ def render_core_section(title, tasks, week):
         return ""
     color = section_color(title)
     label = f"Core Work — {week} · {title}" if week else title
-    draggable = title in ("High Priority", "Lower Priority")
+    # All core sections support drag-and-drop, including in/out of Monitoring and Today's Focus
+    draggable = True
     rows = []
     for t in tasks:
         rc = row_classes(t)
@@ -644,6 +710,15 @@ def build_page(data):
         f'<button id="modal-save">Add task</button>'
         f'</div></div></div>'
         f'<button id="sort-btn">\u21d5 Sort</button>'
+        f'<div id="ctx-menu">'
+        f'<div class="ctx-header">Move to</div>'
+        f'<div class="ctx-item" data-section="Today\u0027s Focus">Today\u0027s Focus</div>'
+        f'<div class="ctx-item" data-section="Monitoring">Monitoring</div>'
+        f'<div class="ctx-item" data-section="High Priority">High Priority</div>'
+        f'<div class="ctx-item" data-section="Lower Priority">Lower Priority</div>'
+        f'<div class="ctx-divider"></div>'
+        f'<div class="ctx-item danger" data-action="cancel">Cancel task</div>'
+        f'</div>'
         f'<script>{SCRIPT}</script>'
         f'</body></html>'
     )
@@ -656,6 +731,54 @@ def current_core_path():
     today = datetime.date.today()
     y, w, _ = today.isocalendar()
     return Path.home() / "todo" / "journal" / f"{y}-W{w:02d}-core.md"
+
+def current_journal_path():
+    today = datetime.date.today()
+    y, w, _ = today.isocalendar()
+    return Path.home() / "todo" / "journal" / f"{y}-W{w:02d}.md"
+
+def set_today_focus(task_names):
+    """Replace today's #### Core Focus list in the journal with the given names (numbered)."""
+    journal_path = current_journal_path()
+    if not journal_path.exists():
+        return
+    lines = journal_path.read_text().split("\n")
+    today = datetime.date.today()
+    section_header = f"## {today.strftime('%A')} {today.isoformat()}"
+
+    try:
+        section_start = next(i for i, l in enumerate(lines) if l.strip() == section_header)
+    except StopIteration:
+        return
+
+    section_end = next(
+        (i for i, l in enumerate(lines[section_start + 1:], section_start + 1) if l.startswith("## ")),
+        len(lines),
+    )
+
+    cf_start = next(
+        (i for i, l in enumerate(lines[section_start:section_end], section_start) if l.strip() == "#### Core Focus"),
+        None,
+    )
+
+    new_block = ["#### Core Focus"] + [f"{i}. {n}" for i, n in enumerate(task_names, 1)] + [""]
+
+    if cf_start is None:
+        # Create the section before ### Done if it exists, else at end of today's section
+        done_idx = next(
+            (i for i, l in enumerate(lines[section_start:section_end], section_start) if l.strip() == "### Done"),
+            section_end,
+        )
+        new_lines = lines[:done_idx] + new_block + lines[done_idx:]
+    else:
+        cf_end = next(
+            (i for i, l in enumerate(lines[cf_start + 1:section_end], cf_start + 1)
+             if l.strip().startswith("####") or l.strip().startswith("###")),
+            section_end,
+        )
+        new_lines = lines[:cf_start] + new_block + lines[cf_end:]
+
+    journal_path.write_text("\n".join(new_lines))
 
 def update_core_file(task_name, new_status, now):
     """Update the task's state marker in the core markdown file."""
@@ -997,6 +1120,138 @@ def apply_status_change(num, force_status=None):
     update_core_file(task_name, new_status, now)
     return True
 
+def apply_cancel(task_id):
+    """Cancel a task: remove from active JSON, mark [/] in core file, move to ## Cancelled."""
+    try:
+        data = json.loads(JSON_FILE.read_text())
+    except Exception:
+        return False
+
+    task, source_section = find_task_by_id(data, task_id)
+    if not task or source_section is None:
+        return False
+
+    now = datetime.datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    ts = now.strftime("%Y-%m-%d %H:%M")
+    task_name = task.get("task", "")
+    src_title = source_section.get("title")
+
+    # Remove from JSON
+    source_section["tasks"] = [t for t in source_section["tasks"] if t.get("id") != task_id]
+
+    # Update core file: change marker to [/], append _(cancelled: ts)_, move to ## Cancelled
+    core_path = current_core_path()
+    if core_path.exists():
+        lines = core_path.read_text().split("\n")
+        done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+        task_idx = next(
+            (i for i, line in enumerate(lines[:done_section])
+             if line.strip().startswith("- [") and task_name.lower() in line.lower()),
+            None,
+        )
+        if task_idx is not None:
+            original = lines[task_idx]
+            updated = re.sub(r"\[.\]", "[/]", original, count=1).rstrip()
+            if "_(cancelled:" not in updated:
+                updated += f" _(cancelled: {ts})_"
+            lines.pop(task_idx)
+
+            cancelled_section = next((i for i, l in enumerate(lines) if l.strip() == "## Cancelled"), None)
+            if cancelled_section is None:
+                # Create the section after ## Done if it exists, else at end of file
+                done_idx = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), None)
+                if done_idx is None:
+                    lines += ["", "## Cancelled", "", f"### {today_str}", updated]
+                else:
+                    after_done = next(
+                        (i for i, l in enumerate(lines[done_idx + 1:], done_idx + 1) if l.startswith("## ")),
+                        len(lines),
+                    )
+                    block = ["", "## Cancelled", "", f"### {today_str}", updated]
+                    for j, item in enumerate(block):
+                        lines.insert(after_done + j, item)
+            else:
+                ins = cancelled_section + 1
+                if ins < len(lines) and lines[ins] == "":
+                    ins += 1
+                if ins < len(lines) and lines[ins] == f"### {today_str}":
+                    lines.insert(ins + 1, updated)
+                else:
+                    lines.insert(cancelled_section + 1, updated)
+                    lines.insert(cancelled_section + 1, f"### {today_str}")
+                    lines.insert(cancelled_section + 1, "")
+
+        core_path.write_text("\n".join(lines))
+
+    # If the cancelled task was in Today's Focus, snapshot the new focus list to journal
+    if src_title == "Today's Focus":
+        focus = next((s for s in data.get("sections", []) if s.get("title") == "Today's Focus"), None)
+        if focus is not None:
+            set_today_focus([t.get("task", "") for t in focus.get("tasks", [])])
+
+    renumber_tasks(data)
+    data["updated"] = ts
+    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    return True
+
+
+def apply_move_section(task_id, target_title):
+    """Move a task by id to a named section (appending at end), with the same
+    side effects as drag-and-drop: priority bumps, status flips, focus journal updates."""
+    try:
+        data = json.loads(JSON_FILE.read_text())
+    except Exception:
+        return False
+
+    src_task, src_section = find_task_by_id(data, task_id)
+    if not src_task or src_section is None:
+        return False
+
+    tgt_section = next((s for s in data.get("sections", []) if s.get("title") == target_title), None)
+    if tgt_section is None:
+        return False
+
+    if src_section is tgt_section:
+        return True  # already in target section — no-op
+
+    src_title = src_section.get("title")
+    tgt_title = tgt_section.get("title")
+    now = datetime.datetime.now()
+
+    # Remove from source
+    src_section["tasks"] = [t for t in src_section["tasks"] if t.get("id") != task_id]
+
+    # Priority bump for High/Lower Priority crossings
+    if tgt_title == "High Priority" and src_task.get("pri") not in ("P1", "P2"):
+        src_task["pri"] = "P2"
+        update_core_file_priority(src_task.get("task", ""), "P2", now)
+    elif tgt_title == "Lower Priority" and src_task.get("pri") in ("P1", "P2"):
+        src_task["pri"] = "P3"
+        update_core_file_priority(src_task.get("task", ""), "P3", now)
+
+    # Monitoring entry/exit flips state marker
+    if tgt_title == "Monitoring" and src_task.get("status") != "waiting":
+        src_task["status"] = "waiting"
+        update_core_file(src_task.get("task", ""), "waiting", now)
+    elif src_title == "Monitoring" and tgt_title != "Monitoring":
+        src_task["status"] = "open"
+        update_core_file(src_task.get("task", ""), "open", now)
+
+    tgt_section["tasks"].append(src_task)
+    renumber_tasks(data)
+    data["updated"] = now.strftime("%Y-%m-%d %H:%M")
+    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    sync_core_file_order(data)
+
+    if "Today's Focus" in (src_title, tgt_title):
+        focus = next((s for s in data.get("sections", []) if s.get("title") == "Today's Focus"), None)
+        if focus is not None:
+            set_today_focus([t.get("task", "") for t in focus.get("tasks", [])])
+
+    return True
+
+
 def apply_reorder(from_num, to_num, before=True):
     """Move task (by stable id) to before/after another task. Updates priority when crossing sections."""
     try:
@@ -1021,15 +1276,26 @@ def apply_reorder(from_num, to_num, before=True):
         tgt_idx = next((i for i, t in enumerate(tgt_section["tasks"]) if t.get("id") == to_num),
                        len(tgt_section["tasks"]))
 
-    # Update priority when crossing section boundaries
+    # Cross-section side effects
     now = datetime.datetime.now()
+    src_title = src_section.get("title")
+    tgt_title = tgt_section.get("title")
     if src_section is not tgt_section:
-        if tgt_section.get("title") == "High Priority" and src_task.get("pri") not in ("P1", "P2"):
+        # Priority bumps for High/Lower Priority moves
+        if tgt_title == "High Priority" and src_task.get("pri") not in ("P1", "P2"):
             src_task["pri"] = "P2"
             update_core_file_priority(src_task.get("task", ""), "P2", now)
-        elif tgt_section.get("title") == "Lower Priority" and src_task.get("pri") in ("P1", "P2"):
+        elif tgt_title == "Lower Priority" and src_task.get("pri") in ("P1", "P2"):
             src_task["pri"] = "P3"
             update_core_file_priority(src_task.get("task", ""), "P3", now)
+
+        # Monitoring entry/exit flips the [~] / [ ] marker
+        if tgt_title == "Monitoring" and src_task.get("status") != "waiting":
+            src_task["status"] = "waiting"
+            update_core_file(src_task.get("task", ""), "waiting", now)
+        elif src_title == "Monitoring" and tgt_title != "Monitoring":
+            src_task["status"] = "open"
+            update_core_file(src_task.get("task", ""), "open", now)
 
     insert_pos = tgt_idx if before else tgt_idx + 1
     tgt_section["tasks"].insert(insert_pos, src_task)
@@ -1037,6 +1303,13 @@ def apply_reorder(from_num, to_num, before=True):
     data["updated"] = now.strftime("%Y-%m-%d %H:%M")
     JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
     sync_core_file_order(data)
+
+    # If the drag involved Today's Focus, snapshot the new focus list to the journal.
+    # This converts auto-derived focus to explicit so the change survives `tk` rebuilds.
+    if "Today's Focus" in (src_title, tgt_title):
+        focus = next((s for s in data.get("sections", []) if s.get("title") == "Today's Focus"), None)
+        if focus is not None:
+            set_today_focus([t.get("task", "") for t in focus.get("tasks", [])])
     return True
 
 
@@ -1170,6 +1443,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ok = apply_sort()
         elif self.path == "/reorder":
             ok = apply_reorder(body.get("from"), body.get("to"), body.get("before", True))
+        elif self.path == "/move-section":
+            ok = apply_move_section(body.get("id"), body.get("section"))
+        elif self.path == "/cancel":
+            ok = apply_cancel(body.get("id"))
         elif self.path == "/add":
             ok = apply_add(body)
         else:
