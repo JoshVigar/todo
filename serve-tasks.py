@@ -274,10 +274,8 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
   align-items: stretch;
 }
 .col-right { display: flex; flex-direction: column; }
-.completed-anchor { margin-top: auto; }
 @media (max-width: 1100px) {
   .dashboard-grid { grid-template-columns: 1fr; }
-  .completed-anchor { margin-top: 0; }
 }
 .cmp-section { display: flex; flex-direction: column; }
 .cmp-row {
@@ -1011,10 +1009,10 @@ def _build_dashboard_body(data, week):
         card(render_compact_section(title, sections_by_title[title].get("tasks", []), week))
         for title in RIGHT if title in sections_by_title
     )
-    # Completed today is anchored to the bottom of the right column
+    # Completed today sits directly under Lower Priority in the right column
     completed_html = render_compact_completed(data.get("completed_today", []))
     if completed_html:
-        right_html += f'<div class="completed-anchor">{card(completed_html)}</div>'
+        right_html += card(completed_html)
 
     parts.append(
         f'<div class="dashboard-grid">'
