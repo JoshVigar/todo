@@ -1,0 +1,1190 @@
+#!/usr/bin/env python3
+"""Serves tasks-live.json as a dark-mode HTML page with auto-refresh."""
+import datetime
+import email.utils
+import http.server
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+from pathlib import Path
+
+_server = None
+
+def _watch_self():
+    path = os.path.abspath(__file__)
+    mtime = os.path.getmtime(path)
+    while True:
+        time.sleep(3)
+        if os.path.getmtime(path) != mtime:
+            print("serve-tasks.py changed — reloading...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+threading.Thread(target=_watch_self, daemon=True).start()
+
+JSON_FILE = Path.home() / "todo" / "tasks-live.json"
+PORT = 6419
+
+STATUS_MAP = {
+    "waiting":          ("⏳ Waiting",             "b-waiting"),
+    "waiting_support":  ("⏳ Waiting for support",  "b-waiting"),
+    "waiting_customer": ("⏳ Waiting for customer", "b-waiting"),
+    "in_progress":      ("🔄 In Progress",          "b-progress"),
+    "blocked":          ("🚫 Blocked",              "b-blocked"),
+    "todo":             ("📋 To Do",                "b-todo"),
+    "open":             ("🔓 Open",                 "b-open"),
+    "done":             ("✅ Done",                 "b-done"),
+    "replied":          ("💬 Replied",              "b-replied"),
+}
+
+# Click cycles active states only — done is NOT in the cycle (use # cell to complete)
+STATUS_CYCLE = {
+    "open":        "in_progress",
+    "todo":        "in_progress",
+    "in_progress": "waiting",
+    "waiting":     "open",
+    "blocked":     "in_progress",
+}
+
+# Markdown state markers for core file
+STATE_MARKER = {
+    "open":        "[ ]",
+    "todo":        "[ ]",
+    "in_progress": "[-]",
+    "waiting":     "[~]",
+    "blocked":     "[!]",
+    "done":        "[x]",
+}
+
+PRI_LABEL = {"P1": "P1 🔴", "P2": "P2 🟠", "P3": "P3 🟡", "P4": "P4 🔵", "P5": "P5 ⏸️"}
+PRI_CSS   = {"P1": "p1",    "P2": "p2",    "P3": "p3",    "P4": "p4",    "P5": "p5"}
+PRI_EMOJI = {"P1": "🔴",    "P2": "🟠",    "P3": "🟡",    "P4": "🔵",    "P5": "⏸️"}
+PRI_CYCLE = {"P1": "P2", "P2": "P3", "P3": "P4", "P4": "P5", "P5": "P1", None: "P3"}
+
+SECTION_COLORS = {
+    "monitoring":      "#e3b341",
+    "high priority":   "#f0883e",
+    "lower priority":  "#388bfd",
+    "today's focus":   "#3fb950",
+    "completed today": "#3fb950",
+    "goalie":          "#bc8cff",
+}
+
+CSS = """\
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
+  font-size: 13px;
+  padding: 16px;
+}
+.section-header {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e6edf3;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 0 3px 10px;
+  margin: 24px 0 8px;
+  border-left: 3px solid #388bfd;
+}
+table { width: 100%; border-collapse: collapse; margin-bottom: 8px; table-layout: fixed; }
+th {
+  position: sticky; top: 0; z-index: 1;
+  background: #161b22; color: #8b949e;
+  font-weight: 600; text-align: left;
+  padding: 6px 10px; border-bottom: 1px solid #30363d;
+  white-space: nowrap;
+}
+td { padding: 5px 10px; border-bottom: 1px solid #484f58; vertical-align: middle; }
+td.num { color: #484f58; cursor: pointer; user-select: none; width: 28px; text-align: center; }
+td.num:hover { color: #3fb950; }
+td.num:hover::after { content: " ✓"; }
+td.num-done:hover { color: #f85149; }
+td.num-done:hover::after { content: " ↩"; }
+tr:hover td { background: #1c2128 !important; }
+tr.row-overdue  td { background: rgba(248, 81, 73, 0.06); }
+tr.row-blocked  td { background: rgba(248, 81, 73, 0.06); }
+tr.row-progress td { background: rgba(56, 139, 253, 0.05); }
+tr.row-due-soon td { background: rgba(230, 179, 65, 0.07); }
+tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
+.badge {
+  display: inline-block;
+  padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 500; white-space: nowrap;
+}
+.badge.status-badge  { cursor: pointer; }
+.badge.status-badge:hover  { filter: brightness(1.25); }
+.badge.priority-badge { cursor: pointer; }
+.badge.priority-badge:hover { filter: brightness(1.25); }
+.b-progress { background: #1c3a5e; color: #79c0ff; }
+.b-blocked  { background: #3d1a1a; color: #f85149; }
+.b-waiting  { background: #2f2008; color: #e3b341; }
+.b-todo     { background: #21262d; color: #8b949e; }
+.b-open     { background: #21262d; color: #8b949e; }
+.b-done     { background: #12261e; color: #3fb950; }
+.b-replied  { background: #1c3a5e; color: #79c0ff; }
+.p1 { background: #3d1a1a; color: #f85149; }
+.p2 { background: #2f1a08; color: #f0883e; }
+.p3 { background: #2f2008; color: #e3b341; }
+.p4 { background: #1c2a3d; color: #79c0ff; }
+.p5 { background: #21262d; color: #8b949e; }
+a { color: #58a6ff; text-decoration: none; cursor: pointer; }
+a:hover { text-decoration: underline; }
+p.counts { margin: 6px 0; color: #8b949e; font-size: 12px; }
+#sort-btn {
+  position: fixed; bottom: 16px; right: 16px; z-index: 10;
+  background: #21262d; border: 1px solid #30363d;
+  color: #8b949e; padding: 4px 12px; border-radius: 6px;
+  cursor: pointer; font-size: 12px;
+}
+#sort-btn:hover { background: #30363d; color: #e6edf3; }
+#add-btn {
+  position: fixed; bottom: 48px; right: 16px; z-index: 10;
+  background: #21262d; border: 1px solid #30363d;
+  color: #8b949e; padding: 4px 12px; border-radius: 6px;
+  cursor: pointer; font-size: 12px;
+}
+#add-btn:hover { background: #30363d; color: #e6edf3; }
+#modal-overlay {
+  display: none; position: fixed; inset: 0; z-index: 100;
+  background: rgba(0,0,0,0.6); align-items: center; justify-content: center;
+}
+#modal-overlay.open { display: flex; }
+#modal {
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 20px; width: 460px; max-width: 96vw;
+}
+#modal h3 { font-size: 14px; margin-bottom: 14px; color: #e6edf3; }
+#modal label { display: block; font-size: 11px; color: #8b949e; margin-bottom: 3px; }
+#modal input, #modal select {
+  width: 100%; background: #0d1117; border: 1px solid #30363d;
+  color: #e6edf3; border-radius: 4px; padding: 5px 8px; font-size: 12px;
+  margin-bottom: 10px;
+}
+.modal-row { display: flex; gap: 8px; }
+.modal-row > div { flex: 1; }
+.modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+#modal-cancel {
+  background: none; border: 1px solid #30363d; color: #8b949e;
+  padding: 5px 14px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+#modal-save {
+  background: #238636; border: none; color: #fff;
+  padding: 5px 14px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+#modal-cancel:hover { background: #30363d; }
+#modal-save:hover { background: #2ea043; }
+tr[draggable="true"] { cursor: grab; }
+tr[draggable="true"]:active { cursor: grabbing; }
+tr.dragging { opacity: 0.3; }
+tr.drag-over-top > td { border-top: 2px solid #388bfd !important; }
+tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
+"""
+
+SCRIPT = """\
+var STATUS_NEXT = {
+  'open':'in_progress', 'todo':'in_progress',
+  'in_progress':'waiting', 'waiting':'open', 'blocked':'in_progress'
+};
+var STATUS_LABEL = {
+  'in_progress':'\U0001F504 In Progress', 'waiting':'\u23F3 Waiting',
+  'open':'\U0001F513 Open', 'todo':'\U0001F4CB To Do'
+};
+var STATUS_CLS = {
+  'in_progress':'b-progress', 'waiting':'b-waiting',
+  'open':'b-open', 'todo':'b-todo'
+};
+var PRI_NEXT = {'P1':'P2','P2':'P3','P3':'P4','P4':'P5','P5':'P1'};
+var PRI_LABEL = {'P1':'P1 \U0001F534','P2':'P2 \U0001F7E0','P3':'P3 \U0001F7E1','P4':'P4 \U0001F535','P5':'P5 \u23F8\uFE0F'};
+var PRI_CLS   = {'P1':'p1','P2':'p2','P3':'p3','P4':'p4','P5':'p5'};
+
+document.addEventListener('click', function(e) {
+  // Uncomplete via # cell on completed rows
+  var done_td = e.target.closest('td.num-done');
+  if (done_td && done_td.dataset.id) {
+    e.preventDefault();
+    var row = done_td.closest('tr');
+    row.style.opacity = '0.35';
+    row.style.transition = 'opacity 0.2s';
+    fetch('/uncomplete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: parseInt(done_td.dataset.id)})
+    });
+    return;
+  }
+
+  // Complete task via # cell on active rows
+  var num_td = e.target.closest('td.num:not(.num-done)');
+  if (num_td && num_td.dataset.id) {
+    e.preventDefault();
+    var row = num_td.closest('tr');
+    row.style.opacity = '0.35';
+    row.style.transition = 'opacity 0.2s';
+    fetch('/complete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: parseInt(num_td.dataset.id)})
+    });
+    return;
+  }
+
+  // Status cycle (optimistic)
+  var badge = e.target.closest('.status-badge');
+  if (badge && badge.dataset.id && badge.dataset.status) {
+    e.preventDefault();
+    var cur = badge.dataset.status;
+    var next = STATUS_NEXT[cur];
+    if (next) {
+      badge.dataset.status = next;
+      badge.textContent = STATUS_LABEL[next] || next;
+      badge.className = 'badge status-badge ' + (STATUS_CLS[next] || 'b-open');
+      badge.dataset.id = badge.dataset.id; // keep
+      fetch('/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: parseInt(badge.dataset.id)})
+      });
+    }
+    return;
+  }
+
+  // Priority cycle (optimistic)
+  var pri = e.target.closest('.priority-badge');
+  if (pri && pri.dataset.id && pri.dataset.pri) {
+    e.preventDefault();
+    var curP = pri.dataset.pri;
+    var nextP = PRI_NEXT[curP] || 'P3';
+    pri.dataset.pri = nextP;
+    pri.textContent = PRI_LABEL[nextP] || nextP;
+    pri.className = 'badge priority-badge ' + (PRI_CLS[nextP] || '');
+    fetch('/update-pri', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: parseInt(pri.dataset.id)})
+    });
+    return;
+  }
+
+  // External links
+  var a = e.target.closest('a');
+  if (a && a.href && !a.href.startsWith('http://localhost')) {
+    e.preventDefault();
+    fetch('/open?url=' + encodeURIComponent(a.href));
+  }
+});
+
+// Sort button
+document.getElementById('sort-btn').addEventListener('click', function() {
+  fetch('/sort', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+});
+
+// Add button + modal
+document.getElementById('add-btn').addEventListener('click', function() {
+  document.getElementById('modal-overlay').classList.add('open');
+  setTimeout(function(){ document.getElementById('m-task').focus(); }, 50);
+});
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+document.getElementById('modal-cancel').addEventListener('click', closeModal);
+document.getElementById('modal-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeModal();
+});
+document.getElementById('modal-save').addEventListener('click', function() {
+  var task = document.getElementById('m-task').value.trim();
+  if (!task) { document.getElementById('m-task').focus(); return; }
+  var payload = {
+    task: task,
+    pri: document.getElementById('m-pri').value,
+    due: document.getElementById('m-due').value.trim() || '\u2014',
+    why: document.getElementById('m-why').value.trim() || '\u2014',
+    link_label: document.getElementById('m-link-label').value.trim(),
+    link_url: document.getElementById('m-link-url').value.trim()
+  };
+  fetch('/add', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
+    .then(function(r) {
+      if (r.ok) {
+        closeModal();
+        ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){document.getElementById(id).value='';});
+        document.getElementById('m-pri').value = 'P2';
+      }
+    });
+});
+
+// Drag-and-drop reordering
+var _dragNum = null, _dragPaused = false;
+document.addEventListener('dragstart', function(e) {
+  var tr = e.target.closest('tr[draggable="true"]');
+  if (!tr) return;
+  _dragNum = parseInt(tr.dataset.id);
+  _dragPaused = true;
+  tr.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', String(_dragNum));
+});
+document.addEventListener('dragend', function(e) {
+  _dragPaused = false;
+  _dragNum = null;
+  document.querySelectorAll('tr.dragging').forEach(function(r) { r.classList.remove('dragging'); });
+  document.querySelectorAll('tr.drag-over-top, tr.drag-over-bottom').forEach(function(r) {
+    r.classList.remove('drag-over-top', 'drag-over-bottom');
+  });
+});
+document.addEventListener('dragover', function(e) {
+  var tr = e.target.closest('tr[draggable="true"]');
+  if (!tr || tr.dataset.id == String(_dragNum)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('tr.drag-over-top, tr.drag-over-bottom').forEach(function(r) {
+    r.classList.remove('drag-over-top', 'drag-over-bottom');
+  });
+  var mid = tr.getBoundingClientRect().top + tr.getBoundingClientRect().height / 2;
+  tr.classList.add(e.clientY < mid ? 'drag-over-top' : 'drag-over-bottom');
+});
+document.addEventListener('drop', function(e) {
+  var tr = e.target.closest('tr[draggable="true"]');
+  if (!tr || !_dragNum) return;
+  e.preventDefault();
+  var toNum = parseInt(tr.dataset.id);
+  if (_dragNum === toNum) return;
+  var before = e.clientY < tr.getBoundingClientRect().top + tr.getBoundingClientRect().height / 2;
+  fetch('/reorder', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({from: _dragNum, to: toNum, before: before})
+  });
+});
+
+// Scroll-preserving auto-refresh (updates both content and styles).
+// Only runs when the tab has focus — switching to another app or tab pauses polling.
+function _refreshTasks() {
+  if (_dragPaused) return;
+  if (!document.hasFocus()) return;
+  var sy = window.scrollY;
+  fetch('/').then(function(r) {
+    if (r.status === 304) return null;
+    return r.text();
+  }).then(function(html) {
+    if (!html) return;
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    var fresh = doc.querySelector('#tasks-content');
+    if (fresh) {
+      document.getElementById('tasks-content').innerHTML = fresh.innerHTML;
+      window.scrollTo(0, sy);
+    }
+    var freshStyle = doc.querySelector('style');
+    if (freshStyle) {
+      var cur = document.querySelector('style');
+      if (cur && cur.textContent !== freshStyle.textContent) {
+        cur.textContent = freshStyle.textContent;
+      }
+    }
+  }).catch(function(){});
+}
+setInterval(_refreshTasks, 2000);
+// Refresh immediately on regaining focus so you see fresh data as soon as you switch back.
+window.addEventListener('focus', _refreshTasks);
+"""
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def h(text):
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def format_age(from_week, current_week, added=None):
+    """Show task age. Uses 'added' date (days) if available, falls back to week diff."""
+    if added:
+        try:
+            added_date = datetime.date.fromisoformat(added)
+            days = (datetime.date.today() - added_date).days
+            if days <= 0:
+                return '<span style="color:#484f58">today</span>'
+            label = f"{days}d"
+            if days <= 3:
+                color = "#8b949e"
+            elif days <= 7:
+                color = "#b8a44a"
+            elif days <= 14:
+                color = "#e3b341"
+            else:
+                color = "#f0883e"
+            return f'<span style="color:{color}">{label}</span>'
+        except Exception:
+            pass
+    if not from_week or from_week in ("—", "—"):
+        return '<span style="color:#484f58">—</span>'
+    try:
+        weeks = int(current_week.lstrip("W")) - int(from_week.lstrip("W"))
+        if weeks <= 0:
+            return '<span style="color:#484f58">new</span>'
+        elif weeks == 1:
+            return f'<span style="color:#8b949e">{weeks}w</span>'
+        elif weeks == 2:
+            return f'<span style="color:#e3b341">{weeks}w</span>'
+        else:
+            return f'<span style="color:#f0883e">{weeks}w</span>'
+    except Exception:
+        return h(from_week)
+
+def render_links(links):
+    if not links:
+        return "—"
+    return " · ".join(f'<a href="{l["url"]}">{h(l["label"])}</a>' for l in links)
+
+def render_status(status, task_id=None):
+    label, cls = STATUS_MAP.get(status, (h(status), "b-open"))
+    cycable = status in STATUS_CYCLE
+    extra = f' data-id="{task_id}" data-status="{status}"' if cycable and task_id is not None else ""
+    status_cls = " status-badge" if cycable else ""
+    return f'<span class="badge {cls}{status_cls}"{extra}>{label}</span>'
+
+def render_pri(pri, task_id=None):
+    extra = f' data-id="{task_id}" data-pri="{pri or ""}"' if task_id is not None else ""
+    if not pri:
+        return f'<span class="badge priority-badge"{extra}>—</span>' if task_id is not None else "—"
+    cls = PRI_CSS.get(pri, "")
+    label = PRI_LABEL.get(pri, pri)
+    return f'<span class="badge {cls} priority-badge"{extra}>{label}</span>'
+
+def is_due_soon(due_str):
+    """True if due_str is HH:MM and within the next 2 hours."""
+    if not due_str or due_str in ("—", "today") or "⚠️" in due_str or "-" in due_str:
+        return False
+    try:
+        hh, mm = map(int, due_str.split(":"))
+        now = datetime.datetime.now()
+        due = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        delta = (due - now).total_seconds()
+        return 0 <= delta <= 7200
+    except Exception:
+        return False
+
+def row_classes(task):
+    cls = []
+    status = task.get("status", "")
+    due = task.get("due") or ""
+    if status == "in_progress":
+        cls.append("row-progress")
+    if status == "blocked":
+        cls.append("row-blocked")
+    if "⚠️" in due:
+        cls.append("row-overdue")
+    elif is_due_soon(due):
+        cls.append("row-due-soon")
+    return f' class="{" ".join(cls)}"' if cls else ""
+
+def section_color(title):
+    key = title.lower()
+    for k, c in SECTION_COLORS.items():
+        if k in key:
+            return c
+    return "#388bfd"
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+def render_core_section(title, tasks, week):
+    if not tasks:
+        return ""
+    color = section_color(title)
+    label = f"Core Work — {week} · {title}" if week else title
+    draggable = title in ("High Priority", "Lower Priority")
+    rows = []
+    for t in tasks:
+        rc = row_classes(t)
+        task_id = t.get("id", t.get("num", ""))
+        due = t.get("due") or "—"
+        due_html = f'<span class="due">{h(due)}</span>' if is_due_soon(due) else h(due)
+        drag_attrs = f' draggable="true" data-id="{task_id}"' if draggable else ""
+        rows.append(
+            f'<tr{rc}{drag_attrs}>'
+            f'<td class="num" data-id="{task_id}">{task_id}</td>'
+            f'<td>{render_pri(t.get("pri"), task_id)}</td>'
+            f'<td>{h(t.get("task",""))}</td>'
+            f'<td>{due_html}</td>'
+            f'<td>{format_age(t.get("from"), week, t.get("added"))}</td>'
+            f'<td>{render_links(t.get("links",[]))}</td>'
+            f'<td>{render_status(t.get("status","open"), task_id)}</td>'
+            f'<td>{h(t.get("why") or "—")}</td>'
+            f'</tr>'
+        )
+    return (
+        f'<div class="section-header" style="border-left-color:{color}">{h(label)}</div>\n'
+        f'<table><thead><tr>'
+        f'<th style="width:2%">#</th>'
+        f'<th style="width:5%">Pri</th>'
+        f'<th>Task</th>'
+        f'<th style="width:9%">Due</th>'
+        f'<th style="width:4%">Age</th>'
+        f'<th style="width:8%">Link</th>'
+        f'<th style="width:7%">Status</th>'
+        f'<th style="width:16%">Why</th>'
+        f'</tr></thead><tbody>\n'
+        + "\n".join(rows)
+        + "\n</tbody></table>\n"
+    )
+
+def render_goalie_section(title, tasks):
+    if not tasks:
+        return ""
+    color = section_color(title)
+    rows = []
+    for t in tasks:
+        rc = row_classes(t)
+        task_id = t.get("id", t.get("num", ""))
+        rows.append(
+            f'<tr{rc}>'
+            f'<td>{task_id}</td>'
+            f'<td>{h(t.get("task",""))}</td>'
+            f'<td>{render_links(t.get("links",[]))}</td>'
+            f'<td>{render_status(t.get("status","open"), task_id)}</td>'
+            f'</tr>'
+        )
+    return (
+        f'<div class="section-header" style="border-left-color:{color}">{h(title)}</div>\n'
+        f'<table><thead><tr>'
+        f'<th style="width:2%">#</th>'
+        f'<th>Task</th>'
+        f'<th style="width:9%">Link</th>'
+        f'<th style="width:7%">Status</th>'
+        f'</tr></thead><tbody>\n'
+        + "\n".join(rows)
+        + "\n</tbody></table>\n"
+    )
+
+def render_completed(tasks):
+    if not tasks:
+        return ""
+    color = SECTION_COLORS["completed today"]
+    rows = []
+    for t in tasks:
+        task_id = t.get("id", t.get("num", ""))
+        rows.append(
+            f'<tr>'
+            f'<td class="num num-done" data-id="{task_id}">{task_id}</td>'
+            f'<td>{h(t.get("task",""))}</td>'
+            f'<td>{render_links(t.get("links",[]))}</td>'
+            f'<td>{h(t.get("time") or "—")}</td>'
+            f'</tr>'
+        )
+    return (
+        f'<div class="section-header" style="border-left-color:{color}">Completed today</div>\n'
+        f'<table><thead><tr>'
+        f'<th style="width:2%">#</th>'
+        f'<th>Task</th>'
+        f'<th style="width:9%">Link</th>'
+        f'<th style="width:5%">Time</th>'
+        f'</tr></thead><tbody>\n'
+        + "\n".join(rows)
+        + "\n</tbody></table>\n"
+    )
+
+def build_page(data):
+    week = data.get("week", "")
+    parts = []
+    for section in data.get("sections", []):
+        stype = section.get("type", "core")
+        title = section.get("title", "")
+        tasks = section.get("tasks", [])
+        if stype == "goalie":
+            parts.append(render_goalie_section(title, tasks))
+        else:
+            parts.append(render_core_section(title, tasks, week))
+    parts.append(render_completed(data.get("completed_today", [])))
+    if data.get("counts"):
+        parts.append(f'<p class="counts">{h(data["counts"])}</p>\n')
+    if data.get("updated"):
+        parts.append(f'<p class="counts" style="margin-top:16px;color:#484f58">Updated {h(data["updated"])}</p>\n')
+    body = "".join(parts)
+    return (
+        f'<!DOCTYPE html><html><head>'
+        f'<meta charset="utf-8">'
+        f'<title>Tasks</title><style>{CSS}</style>'
+        f'</head><body><div id="tasks-content">{body}</div>'
+        f'<button id="add-btn">+ Add</button>'
+        f'<div id="modal-overlay"><div id="modal">'
+        f'<h3>Add Task</h3>'
+        f'<label>Task name</label>'
+        f'<input id="m-task" type="text" placeholder="Task description">'
+        f'<div class="modal-row">'
+        f'<div><label>Priority</label>'
+        f'<select id="m-pri">'
+        f'<option value="P1">P1 \U0001F534</option>'
+        f'<option value="P2" selected>P2 \U0001F7E0</option>'
+        f'<option value="P3">P3 \U0001F7E1</option>'
+        f'<option value="P4">P4 \U0001F535</option>'
+        f'<option value="P5">P5 \u23F8\uFE0F</option>'
+        f'</select></div>'
+        f'<div><label>Due (HH:MM or YYYY-MM-DD)</label>'
+        f'<input id="m-due" type="text" placeholder="\u2014"></div>'
+        f'</div>'
+        f'<label>Why</label>'
+        f'<input id="m-why" type="text" placeholder="reason (optional)">'
+        f'<div class="modal-row">'
+        f'<div><label>Link label</label>'
+        f'<input id="m-link-label" type="text" placeholder="HOTS-123"></div>'
+        f'<div><label>Link URL</label>'
+        f'<input id="m-link-url" type="url" placeholder="https://..."></div>'
+        f'</div>'
+        f'<div class="modal-footer">'
+        f'<button id="modal-cancel">Cancel</button>'
+        f'<button id="modal-save">Add task</button>'
+        f'</div></div></div>'
+        f'<button id="sort-btn">\u21d5 Sort</button>'
+        f'<script>{SCRIPT}</script>'
+        f'</body></html>'
+    )
+
+# ---------------------------------------------------------------------------
+# Core file update
+# ---------------------------------------------------------------------------
+
+def current_core_path():
+    today = datetime.date.today()
+    y, w, _ = today.isocalendar()
+    return Path.home() / "todo" / "journal" / f"{y}-W{w:02d}-core.md"
+
+def update_core_file(task_name, new_status, now):
+    """Update the task's state marker in the core markdown file."""
+    core_path = current_core_path()
+    if not core_path.exists():
+        return
+
+    lines = core_path.read_text().split("\n")
+    today_str = now.strftime("%Y-%m-%d")
+    ts = now.strftime("%Y-%m-%d %H:%M")
+
+    # Find ## Done boundary
+    done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+
+    # Find the task line in the active area
+    task_idx = None
+    for i, line in enumerate(lines[:done_section]):
+        if line.strip().startswith("- [") and task_name.lower() in line.lower():
+            task_idx = i
+            break
+
+    if task_idx is None:
+        return
+
+    original = lines[task_idx]
+
+    if new_status == "done":
+        # Mark done + append timestamp
+        updated = re.sub(r"\[.\]", "[x]", original, count=1).rstrip()
+        if "_(completed:" not in updated:
+            updated += f" _(completed: {ts})_"
+        # Remove from active list
+        lines.pop(task_idx)
+        # Recalculate done_section index after pop
+        done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), None)
+        if done_section is None:
+            lines += ["", "## Done", "", f"### {today_str}", updated]
+        else:
+            # Insert after ## Done, under today's heading (newest first)
+            ins = done_section + 1
+            if ins < len(lines) and lines[ins] == "":
+                ins += 1
+            if ins < len(lines) and lines[ins] == f"### {today_str}":
+                lines.insert(ins + 1, updated)
+            else:
+                lines.insert(done_section + 1, updated)
+                lines.insert(done_section + 1, f"### {today_str}")
+                lines.insert(done_section + 1, "")
+    else:
+        marker = STATE_MARKER.get(new_status, "[ ]")
+        lines[task_idx] = re.sub(r"\[.\]", marker, original, count=1)
+
+    core_path.write_text("\n".join(lines))
+
+def update_core_file_priority(task_name, new_pri, now):
+    """Swap the priority emoji on the task line in the core markdown file."""
+    core_path = current_core_path()
+    if not core_path.exists():
+        return
+    lines = core_path.read_text().split("\n")
+    done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+    all_emojis = set(PRI_EMOJI.values())
+    new_emoji = PRI_EMOJI.get(new_pri)
+    for i, line in enumerate(lines[:done_section]):
+        if line.strip().startswith("- [") and task_name.lower() in line.lower():
+            has_emoji = any(e in line for e in all_emojis)
+            if new_emoji:
+                if has_emoji:
+                    for e in all_emojis:
+                        if e in line:
+                            lines[i] = line.replace(e, new_emoji, 1)
+                            break
+                else:
+                    # Insert emoji after "- [X] "
+                    lines[i] = re.sub(r"(- \[.\] )", rf"\1{new_emoji} ", line, count=1)
+            else:
+                # Remove emoji (cycling to null)
+                for e in all_emojis:
+                    if e in line:
+                        lines[i] = line.replace(e + " ", "", 1)
+                        break
+            break
+    core_path.write_text("\n".join(lines))
+
+
+def apply_priority_update(task_id):
+    """Cycle the priority of the task with the given stable id."""
+    try:
+        data = json.loads(JSON_FILE.read_text())
+    except Exception:
+        return False
+    now = datetime.datetime.now()
+    task, _ = find_task_by_id(data, task_id)
+    if not task:
+        return False
+    new_pri = PRI_CYCLE.get(task.get("pri"))
+    task["pri"] = new_pri
+    data["updated"] = now.strftime("%Y-%m-%d %H:%M")
+    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    update_core_file_priority(task.get("task", ""), new_pri, now)
+    return True
+
+
+def renumber_tasks(data):
+    """Renumber all tasks sequentially by display order. Never touches 'id'."""
+    n = 1
+    for section in data.get("sections", []):
+        for task in section.get("tasks", []):
+            task["num"] = n
+            n += 1
+    for task in data.get("completed_today", []):
+        task["num"] = n
+        n += 1
+
+def next_task_id(data):
+    """Return the next available stable task ID."""
+    max_id = max(
+        [t.get("id", 0) for s in data.get("sections", []) for t in s.get("tasks", [])] +
+        [t.get("id", 0) for t in data.get("completed_today", [])] +
+        [0]
+    )
+    return max_id + 1
+
+def find_task_by_id(data, task_id):
+    """Return (task, section) for the given stable id, or (None, None)."""
+    for section in data.get("sections", []):
+        for task in section.get("tasks", []):
+            if task.get("id") == task_id:
+                return task, section
+    for task in data.get("completed_today", []):
+        if task.get("id") == task_id:
+            return task, None
+    return None, None
+
+
+def sync_core_file_order(data):
+    """Reorder active task lines in the core file to match the current JSON task order."""
+    core_path = current_core_path()
+    if not core_path.exists():
+        return
+    lines = core_path.read_text().split("\n")
+    done_idx = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+
+    # Ordered task names from JSON
+    ordered_names = [
+        t.get("task", "").lower()
+        for s in data.get("sections", [])
+        for t in s.get("tasks", [])
+    ]
+
+    task_lines = [l for l in lines[:done_idx] if l.strip().startswith("- [")]
+
+    def find_and_claim(name, remaining):
+        for i, l in enumerate(remaining):
+            if name in l.lower():
+                return remaining.pop(i)
+        return None
+
+    remaining = list(task_lines)
+    reordered = []
+    for name in ordered_names:
+        line = find_and_claim(name, remaining)
+        if line:
+            reordered.append(line)
+    reordered.extend(remaining)  # append any unmatched lines at end
+
+    task_iter = iter(reordered)
+    new_lines = []
+    for line in lines[:done_idx]:
+        new_lines.append(next(task_iter) if line.strip().startswith("- [") else line)
+    new_lines.extend(lines[done_idx:])
+    core_path.write_text("\n".join(new_lines))
+
+
+def apply_sort():
+    """Sort by priority; redistribute tasks between High Priority and Lower Priority sections."""
+    try:
+        data = json.loads(JSON_FILE.read_text())
+    except Exception:
+        return False
+    pri_order = {"P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5, None: 6}
+    sections = data.get("sections", [])
+
+    high  = next((s for s in sections if s.get("title") == "High Priority"),  None)
+    lower = next((s for s in sections if s.get("title") == "Lower Priority"), None)
+
+    if high and lower:
+        pool = high.get("tasks", []) + lower.get("tasks", [])
+        high["tasks"]  = sorted([t for t in pool if t.get("pri") in ("P1", "P2")],
+                                 key=lambda t: pri_order.get(t.get("pri"), 6))
+        lower["tasks"] = sorted([t for t in pool if t.get("pri") not in ("P1", "P2")],
+                                 key=lambda t: pri_order.get(t.get("pri"), 6))
+
+    # Sort all other sections internally
+    for s in sections:
+        if s.get("title") not in ("High Priority", "Lower Priority"):
+            s["tasks"] = sorted(s.get("tasks", []),
+                                 key=lambda t: pri_order.get(t.get("pri"), 6))
+
+    renumber_tasks(data)
+    data["updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    sync_core_file_order(data)
+    return True
+
+
+def apply_uncomplete(num):
+    """Move a completed task back to active. Reads priority from core file to pick section."""
+    try:
+        data = json.loads(JSON_FILE.read_text())
+    except Exception:
+        return False
+
+    now = datetime.datetime.now()
+
+    # Find in completed_today by id
+    task = next((t for t in data.get("completed_today", []) if t.get("id") == num), None)
+    if not task:
+        return False
+
+    task_name = task.get("task", "")
+
+    # Read core file to get priority and reconstruct the active line
+    core_path = current_core_path()
+    pri = None
+    if core_path.exists():
+        lines = core_path.read_text().split("\n")
+        done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+        emoji_to_pri = {v: k for k, v in PRI_EMOJI.items()}
+        done_line_idx = None
+        for i, line in enumerate(lines[done_section:], done_section):
+            if line.strip().startswith("- [x]") and task_name.lower() in line.lower():
+                done_line_idx = i
+                for emoji, p in emoji_to_pri.items():
+                    if emoji in line:
+                        pri = p
+                        break
+                break
+
+        if done_line_idx is not None:
+            original = lines[done_line_idx]
+            # Restore: swap [x] → [ ], strip _(completed: ...)_
+            restored = re.sub(r"\[x\]", "[ ]", original, count=1)
+            restored = re.sub(r"\s*_\(completed:[^)]+\)_", "", restored)
+            lines.pop(done_line_idx)
+            # Remove empty heading if no tasks remain under it
+            # (leave cleanup to next tk run)
+            # Insert restored line at top of active area (before ## Done)
+            done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+            lines.insert(done_section, restored)
+            core_path.write_text("\n".join(lines))
+
+    # Remove from completed_today
+    data["completed_today"] = [t for t in data["completed_today"] if t.get("num") != num]
+
+    # Decrement counts
+    counts = data.get("counts", "")
+    today_str = now.strftime("%Y-%m-%d")
+    m = re.search(r"(\d+) core tasks completed this week", counts)
+    if m and int(m.group(1)) > 0:
+        n = int(m.group(1)) - 1
+        counts = re.sub(r"\d+ core tasks completed this week", f"{n} core tasks completed this week", counts)
+        counts = re.sub(rf"(\d+) on {today_str}", lambda x: str(int(x.group(1)) - 1) + f" on {today_str}", counts)
+        counts = re.sub(r"\b0 on [0-9-]+ · ", "", counts)
+        counts = re.sub(r" · 0 on [0-9-]+", "", counts)
+        data["counts"] = counts
+
+    # Add back to JSON — pick section by priority
+    new_task = {
+        "num": num,
+        "pri": pri,
+        "task": task_name,
+        "due": "—",
+        "from": "—",
+        "links": task.get("links", []),
+        "status": "open",
+        "why": "—",
+    }
+    target_title = "High Priority" if pri in ("P1", "P2") else "Lower Priority"
+    target = next((s for s in data.get("sections", []) if s.get("title") == target_title), None)
+    if target is None:
+        target = next((s for s in data.get("sections", []) if s.get("type", "core") == "core"), None)
+    if target:
+        target["tasks"].append(new_task)
+
+    data["updated"] = now.strftime("%Y-%m-%d %H:%M")
+    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    return True
+
+
+def apply_status_change(num, force_status=None):
+    """Update the status of task `num`. Cycles if force_status is None, else sets explicitly."""
+    try:
+        data = json.loads(JSON_FILE.read_text())
+    except Exception:
+        return False
+
+    now = datetime.datetime.now()
+
+    # Find task by stable id
+    task, source_section = find_task_by_id(data, num)
+
+    if not task or source_section is None:
+        return False
+
+    new_status = force_status or STATUS_CYCLE.get(task.get("status", "open"))
+    if not new_status:
+        return False
+
+    task_name = task.get("task", "")
+    task_id = task.get("id", num)
+
+    if new_status == "done":
+        source_section["tasks"] = [t for t in source_section["tasks"] if t.get("id") != task_id]
+        data.setdefault("completed_today", []).append({
+            "num": num,
+            "id": task_id,
+            "task": task_name,
+            "links": task.get("links", []),
+            "time": now.strftime("%H:%M"),
+        })
+        # Update counts
+        counts = data.get("counts", "")
+        today_str = now.strftime("%Y-%m-%d")
+        m = re.search(r"(\d+) core tasks completed this week", counts)
+        if m:
+            n = int(m.group(1)) + 1
+            counts = re.sub(r"\d+ core tasks completed this week", f"{n} core tasks completed this week", counts)
+            if today_str not in counts:
+                counts = re.sub(r"\(", f"(1 on {today_str} · ", counts)
+            else:
+                counts = re.sub(rf"(\d+) on {today_str}", lambda x: f"{int(x.group(1))+1} on {today_str}", counts)
+            data["counts"] = counts
+    else:
+        task["status"] = new_status
+
+    data["updated"] = now.strftime("%Y-%m-%d %H:%M")
+    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    update_core_file(task_name, new_status, now)
+    return True
+
+def apply_reorder(from_num, to_num, before=True):
+    """Move task (by stable id) to before/after another task. Updates priority when crossing sections."""
+    try:
+        data = json.loads(JSON_FILE.read_text())
+    except Exception:
+        return False
+
+    src_task, src_section = find_task_by_id(data, from_num)
+    tgt_task, tgt_section = find_task_by_id(data, to_num)
+
+    if not src_task or not tgt_task or src_section is None or tgt_section is None:
+        return False
+
+    tgt_idx = next((i for i, t in enumerate(tgt_section["tasks"]) if t.get("id") == to_num), None)
+    if tgt_idx is None:
+        return False
+
+    src_section["tasks"] = [t for t in src_section["tasks"] if t.get("id") != from_num]
+
+    # Recalculate index after removal if same section
+    if src_section is tgt_section:
+        tgt_idx = next((i for i, t in enumerate(tgt_section["tasks"]) if t.get("id") == to_num),
+                       len(tgt_section["tasks"]))
+
+    # Update priority when crossing section boundaries
+    now = datetime.datetime.now()
+    if src_section is not tgt_section:
+        if tgt_section.get("title") == "High Priority" and src_task.get("pri") not in ("P1", "P2"):
+            src_task["pri"] = "P2"
+            update_core_file_priority(src_task.get("task", ""), "P2", now)
+        elif tgt_section.get("title") == "Lower Priority" and src_task.get("pri") in ("P1", "P2"):
+            src_task["pri"] = "P3"
+            update_core_file_priority(src_task.get("task", ""), "P3", now)
+
+    insert_pos = tgt_idx if before else tgt_idx + 1
+    tgt_section["tasks"].insert(insert_pos, src_task)
+    renumber_tasks(data)
+    data["updated"] = now.strftime("%Y-%m-%d %H:%M")
+    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    sync_core_file_order(data)
+    return True
+
+
+def add_to_core_file(name, pri, due, why, links):
+    """Insert a new active task line before ## Done in the core file."""
+    core_path = current_core_path()
+    if not core_path.exists():
+        return
+    lines = core_path.read_text().split("\n")
+    emoji = PRI_EMOJI.get(pri, "")
+    task_line = f"- [ ] {emoji} {name}" if emoji else f"- [ ] {name}"
+    if due and due not in ("—", "\u2014"):
+        # Resolve "today" to an explicit date so it does not go stale in the core file
+        resolved_due = datetime.date.today().isoformat() if due == "today" else due
+        task_line += f" — due {resolved_due}"
+    if links:
+        link_strs = " · ".join(f"[{l['label']}]({l['url']})" for l in links)
+        task_line += f" ({link_strs})"
+    if why and why not in ("—", "\u2014"):
+        task_line += f" _(why: {why})_"
+    done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+    lines.insert(done_section, task_line)
+    core_path.write_text("\n".join(lines))
+
+
+def apply_add(task_data):
+    """Add a new task to JSON and core file."""
+    try:
+        data = json.loads(JSON_FILE.read_text())
+    except Exception:
+        return False
+    name = (task_data.get("task") or "").strip()
+    if not name:
+        return False
+    pri = task_data.get("pri") or "P2"
+    due = task_data.get("due") or "\u2014"
+    why = task_data.get("why") or "\u2014"
+    link_label = (task_data.get("link_label") or "").strip()
+    link_url = (task_data.get("link_url") or "").strip()
+    links = [{"label": link_label, "url": link_url}] if link_label and link_url else []
+
+    target_title = "High Priority" if pri in ("P1", "P2") else "Lower Priority"
+    target = next((s for s in data.get("sections", []) if s.get("title") == target_title), None)
+    if target is None:
+        return False
+
+    new_task = {
+        "num": 999,
+        "id": next_task_id(data),
+        "pri": pri,
+        "task": name,
+        "due": due,
+        "from": "\u2014",
+        "added": datetime.date.today().isoformat(),
+        "links": links,
+        "status": "open",
+        "why": why,
+    }
+    target["tasks"].append(new_task)
+    renumber_tasks(data)
+    data["updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    add_to_core_file(name, pri, due, why, links)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# HTTP handler
+# ---------------------------------------------------------------------------
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/open"):
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            url = params.get("url", [""])[0]
+            if url:
+                subprocess.run(["open", url])
+            self.send_response(204)
+            self.end_headers()
+            return
+
+        # Conditional GET: return 304 if neither JSON nor source file has changed.
+        # The source file mtime is included so CSS/HTML edits still propagate.
+        try:
+            json_mtime = int(os.path.getmtime(JSON_FILE))
+            src_mtime  = int(os.path.getmtime(os.path.abspath(__file__)))
+            combined_mtime = max(json_mtime, src_mtime)
+            last_modified = email.utils.formatdate(combined_mtime, usegmt=True)
+        except Exception:
+            combined_mtime = None
+            last_modified = None
+
+        if combined_mtime is not None:
+            ims = self.headers.get("If-Modified-Since")
+            if ims:
+                try:
+                    ims_ts = int(email.utils.parsedate_to_datetime(ims).timestamp())
+                    if ims_ts >= combined_mtime:
+                        self.send_response(304)
+                        self.send_header("Last-Modified", last_modified)
+                        self.end_headers()
+                        return
+                except Exception:
+                    pass
+
+        try:
+            data = json.loads(JSON_FILE.read_text())
+            page = build_page(data)
+        except Exception as e:
+            page = f"<pre style='color:#f85149;padding:16px'>Error: {e}</pre>"
+
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        if last_modified:
+            self.send_header("Last-Modified", last_modified)
+        self.end_headers()
+        self.wfile.write(page.encode())
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length)) if length else {}
+        if self.path == "/update":
+            ok = apply_status_change(body.get("id"))
+        elif self.path == "/complete":
+            ok = apply_status_change(body.get("id"), force_status="done")
+        elif self.path == "/update-pri":
+            ok = apply_priority_update(body.get("id"))
+        elif self.path == "/uncomplete":
+            ok = apply_uncomplete(body.get("id"))
+        elif self.path == "/sort":
+            ok = apply_sort()
+        elif self.path == "/reorder":
+            ok = apply_reorder(body.get("from"), body.get("to"), body.get("before", True))
+        elif self.path == "/add":
+            ok = apply_add(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200 if ok else 400)
+        self.end_headers()
+
+    def log_message(self, *_):
+        pass
+
+
+if __name__ == "__main__":
+    print(f"Tasks at http://localhost:{PORT}")
+    _server = http.server.HTTPServer(("", PORT), Handler)
+    _server.socket.set_inheritable(False)
+    _server.serve_forever()

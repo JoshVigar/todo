@@ -1,0 +1,15 @@
+# Personal task data — never commit
+journal/
+active.md
+backlog.md
+someday.md
+waiting.md
+tasks-live.json
+tasks-live.md
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
