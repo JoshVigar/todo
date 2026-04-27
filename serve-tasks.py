@@ -289,11 +289,15 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 .cmp-row.dragging { opacity: 0.3; cursor: grabbing; }
 .cmp-row.drag-over-top { border-top: 2px solid #388bfd; }
 .cmp-row.drag-over-bottom { border-bottom: 2px solid #388bfd; }
-.cmp-id {
+.cmp-id, .cmp-id-done {
   color: #484f58; cursor: pointer; user-select: none; text-align: center; font-size: 11px;
 }
 .cmp-id:hover { color: #3fb950; }
 .cmp-id:hover::after { content: " ✓"; }
+.cmp-id-done:hover { color: #f85149; }
+.cmp-id-done:hover::after { content: " ↩"; }
+.cmp-row-done { cursor: default; }
+.cmp-row-done .cmp-task { color: #8b949e; }
 .cmp-pri { font-size: 11px; text-align: center; }
 .cmp-task {
   color: #e6edf3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -305,6 +309,26 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 .cmp-row.row-progress { background: rgba(56, 139, 253, 0.05); }
 .cmp-row.row-due-soon { background: rgba(230, 179, 65, 0.07); }
 .cmp-row.row-due-soon .cmp-due { color: #e3b341; font-weight: 600; }
+.cmp-task { cursor: pointer; }
+.cmp-task:hover { color: #58a6ff; }
+.cmp-row.expanded { background: #2d333b; }
+.cmp-detail {
+  display: none;
+  padding: 8px 12px 10px 40px;
+  background: rgba(13, 17, 23, 0.55);
+  border-bottom: 1px solid #21262d;
+  font-size: 11px;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.cmp-detail.open { display: flex; }
+.cmp-detail .field { display: inline-flex; align-items: center; gap: 6px; }
+.cmp-detail .field-label {
+  color: #8b949e; text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: 9px; font-weight: 700;
+}
+.cmp-detail .why-text { color: #c9d1d9; font-style: italic; }
 #ctx-menu {
   position: fixed; display: none; z-index: 200;
   background: #161b22; border: 1px solid #30363d; border-radius: 6px;
@@ -345,13 +369,15 @@ var PRI_LABEL = {'P1':'P1 \U0001F534','P2':'P2 \U0001F7E0','P3':'P3 \U0001F7E1',
 var PRI_CLS   = {'P1':'p1','P2':'p2','P3':'p3','P4':'p4','P5':'p5'};
 
 document.addEventListener('click', function(e) {
-  // Uncomplete via # cell on completed rows
-  var done_td = e.target.closest('td.num-done');
+  // Uncomplete via # cell on completed rows (table view OR compact dashboard view)
+  var done_td = e.target.closest('td.num-done, .cmp-id-done');
   if (done_td && done_td.dataset.id) {
     e.preventDefault();
-    var row = done_td.closest('tr');
-    row.style.opacity = '0.35';
-    row.style.transition = 'opacity 0.2s';
+    var row = done_td.closest('tr, .cmp-row');
+    if (row) {
+      row.style.opacity = '0.35';
+      row.style.transition = 'opacity 0.2s';
+    }
     fetch('/uncomplete', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -417,6 +443,19 @@ document.addEventListener('click', function(e) {
   if (a && a.href && !a.href.startsWith('http://localhost')) {
     e.preventDefault();
     fetch('/open?url=' + encodeURIComponent(a.href));
+  }
+
+  // Compact-row expand: click task name to toggle the detail panel
+  var taskSpan = e.target.closest('.cmp-task');
+  if (taskSpan) {
+    var row = taskSpan.closest('.cmp-row');
+    if (row) {
+      var detail = row.nextElementSibling;
+      if (detail && detail.classList.contains('cmp-detail') && detail.dataset.id === row.dataset.id) {
+        detail.classList.toggle('open');
+        row.classList.toggle('expanded');
+      }
+    }
   }
 });
 
@@ -526,6 +565,11 @@ function _refreshTasks() {
   if (_dragPaused) return;
   if (!document.hasFocus()) return;
   var sy = window.scrollY;
+  // Preserve which compact-row detail panels are currently expanded across the swap
+  var openIds = Array.prototype.map.call(
+    document.querySelectorAll('.cmp-detail.open'),
+    function(el) { return el.dataset.id; }
+  );
   // Preserve the current view by including the search string in the fetch URL
   fetch('/' + window.location.search).then(function(r) {
     if (r.status === 304) return null;
@@ -537,6 +581,14 @@ function _refreshTasks() {
     if (fresh) {
       document.getElementById('tasks-content').innerHTML = fresh.innerHTML;
       window.scrollTo(0, sy);
+      openIds.forEach(function(id) {
+        var detail = document.querySelector('.cmp-detail[data-id="' + id + '"]');
+        if (detail) {
+          detail.classList.add('open');
+          var prev = detail.previousElementSibling;
+          if (prev && prev.classList.contains('cmp-row')) prev.classList.add('expanded');
+        }
+      });
     }
     var freshStyle = doc.querySelector('style');
     if (freshStyle) {
@@ -766,6 +818,24 @@ def render_compact_section(title, tasks, week):
             f'{due_html}'
             f'</div>'
         )
+        # Expandable detail panel — hidden until the task name is clicked
+        detail_parts = [
+            f'<span class="field"><span class="field-label">Status</span>{render_status(t.get("status","open"), task_id)}</span>',
+            f'<span class="field"><span class="field-label">Pri</span>{render_pri(t.get("pri"), task_id)}</span>',
+            f'<span class="field"><span class="field-label">Age</span>{format_age(t.get("from"), week, t.get("added"))}</span>',
+        ]
+        if t.get("links"):
+            detail_parts.append(
+                f'<span class="field"><span class="field-label">Links</span>{render_links(t.get("links"))}</span>'
+            )
+        why = (t.get("why") or "").strip()
+        if why and why != "—":
+            detail_parts.append(
+                f'<span class="field"><span class="field-label">Why</span><span class="why-text">{h(why)}</span></span>'
+            )
+        rows.append(
+            f'<div class="cmp-detail" data-id="{task_id}">{"".join(detail_parts)}</div>'
+        )
     return (
         f'<div class="section-header" style="border-left-color:{color}">{h(label)}</div>\n'
         f'<div class="cmp-section">{"".join(rows)}</div>\n'
@@ -876,6 +946,30 @@ def render_completed(tasks):
         + "\n</tbody></table>\n"
     )
 
+def render_compact_completed(tasks):
+    """Compact rendering for dashboard view: matches the Monitoring/Lower Priority style.
+    The id cell uncompletes (handled by .cmp-id-done in the global click handler)."""
+    if not tasks:
+        return ""
+    color = SECTION_COLORS["completed today"]
+    rows = []
+    for t in tasks:
+        task_id = t.get("id", t.get("num", ""))
+        time = t.get("time") or ""
+        time_html = f'<span class="cmp-due">{h(time)}</span>' if time and time != "—" else ""
+        rows.append(
+            f'<div class="cmp-row cmp-row-done" data-id="{task_id}">'
+            f'<span class="cmp-id-done" data-id="{task_id}">{task_id}</span>'
+            f'<span class="cmp-pri"></span>'
+            f'<span class="cmp-task">{h(t.get("task",""))}</span>'
+            f'{time_html}'
+            f'</div>'
+        )
+    return (
+        f'<div class="section-header" style="border-left-color:{color}">Completed today</div>\n'
+        f'<div class="cmp-section">{"".join(rows)}</div>\n'
+    )
+
 VIEWS = ["dashboard", "classic"]
 
 def _build_dashboard_body(data, week):
@@ -909,7 +1003,7 @@ def _build_dashboard_body(data, week):
         for title in RIGHT if title in sections_by_title
     )
     # Completed today is anchored to the bottom of the right column
-    completed_html = render_completed(data.get("completed_today", []))
+    completed_html = render_compact_completed(data.get("completed_today", []))
     if completed_html:
         right_html += f'<div class="completed-anchor">{card(completed_html)}</div>'
 
