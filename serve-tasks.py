@@ -281,31 +281,29 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 }
 .spark-grid {
   display: grid; grid-template-columns: repeat(5, 1fr);
-  gap: 12px; height: 90px; align-items: end;
-  padding: 4px 4px 0;
+  gap: 6px; padding: 6px 4px 2px;
 }
-.spark-col {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  height: 100%;
+.spark-col { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.spark-cell {
+  height: 38px; border-radius: 5px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; color: #e6edf3;
+  border: 1px solid rgba(63, 185, 80, 0.25);
 }
-.spark-count {
-  font-size: 10px; color: #8b949e; font-weight: 600; min-height: 12px;
+.spark-cell.empty {
+  background: #1c2128; border-color: #30363d; color: transparent;
 }
-.spark-bar-wrap {
-  flex: 1; width: 100%; display: flex; align-items: flex-end;
-  border-bottom: 1px solid #21262d;
+.spark-cell.today {
+  outline: 2px solid #3fb950; outline-offset: 1px;
 }
-.spark-bar {
-  width: 100%; background: #30363d; border-radius: 3px 3px 0 0;
-  min-height: 2px; transition: height 0.3s ease;
-}
-.spark-bar.today { background: #3fb950; }
-.spark-bar.future { background: #21262d; }
 .spark-label {
-  font-size: 10px; color: #6e7681; text-transform: uppercase;
-  letter-spacing: 0.04em;
+  display: flex; justify-content: center; align-items: baseline; gap: 4px;
+  font-size: 10px; color: #6e7681;
+  text-transform: uppercase; letter-spacing: 0.04em;
 }
-.spark-col:has(.spark-bar.today) .spark-label { color: #3fb950; font-weight: 700; }
+.spark-date { font-size: 9px; color: #484f58; }
+.spark-col:has(.spark-cell.today) .spark-day { color: #3fb950; font-weight: 700; }
+.spark-col:has(.spark-cell.today) .spark-date { color: #3fb950; }
 .spark-total {
   float: right; color: #8b949e; font-weight: 500;
   text-transform: none; letter-spacing: 0; font-size: 11px;
@@ -1030,17 +1028,32 @@ def render_workdays_sparkline():
     values = [counts.get(d.isoformat(), 0) for d in days]
     peak = max(values) if any(values) else 1
     total = sum(values)
-    weekday_letters = ["M", "T", "W", "T", "F"]
-    bars = []
+    weekday_abbr = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    cells = []
     for d, v in zip(days, values):
-        height_pct = int((v / peak) * 100) if peak else 0
         is_today = d == today
-        cls = "spark-bar today" if is_today else "spark-bar"
-        bars.append(
+        if v == 0:
+            cell_cls = "spark-cell empty"
+            cell_style = ""
+        else:
+            intensity = v / peak
+            # Map intensity 0..1 to alpha bands so a 1-task day still reads as "something happened"
+            alpha_bg = 0.18 + intensity * 0.55
+            alpha_brd = 0.30 + intensity * 0.35
+            cell_cls = "spark-cell"
+            cell_style = (
+                f' style="background:rgba(63,185,80,{alpha_bg:.2f});'
+                f'border-color:rgba(63,185,80,{alpha_brd:.2f})"'
+            )
+        if is_today:
+            cell_cls += " today"
+        cells.append(
             f'<div class="spark-col">'
-            f'<div class="spark-count">{v if v else ""}</div>'
-            f'<div class="spark-bar-wrap"><div class="{cls}" style="height:{height_pct}%"></div></div>'
-            f'<div class="spark-label">{weekday_letters[d.weekday()]}</div>'
+            f'<div class="{cell_cls}"{cell_style}>{v if v else ""}</div>'
+            f'<div class="spark-label">'
+            f'<span class="spark-day">{weekday_abbr[d.weekday()]}</span>'
+            f'<span class="spark-date">{d.day}</span>'
+            f'</div>'
             f'</div>'
         )
     color = SECTION_COLORS["completed today"]
@@ -1048,7 +1061,7 @@ def render_workdays_sparkline():
         f'<div class="section-header" style="border-left-color:{color}">'
         f'Last 5 workdays <span class="spark-total">{total} done</span>'
         f'</div>\n'
-        f'<div class="spark-grid">{"".join(bars)}</div>\n'
+        f'<div class="spark-grid">{"".join(cells)}</div>\n'
     )
 
 
