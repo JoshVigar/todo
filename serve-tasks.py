@@ -305,6 +305,14 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
   font-size: 10px; color: #6e7681; font-weight: 500;
   text-transform: uppercase; letter-spacing: 0.06em;
 }
+#tooltip {
+  position: fixed; display: none; pointer-events: none;
+  background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+  padding: 4px 8px; font-size: 11px; color: #e6edf3;
+  z-index: 300; white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+#tooltip.visible { display: block; }
 .cmp-section { display: flex; flex-direction: column; }
 .cmp-row {
   display: grid;
@@ -472,6 +480,7 @@ document.addEventListener('click', function(e) {
     return;
   }
 
+  // (tooltip handler installed below; nothing to do for it on click)
   // External links
   var a = e.target.closest('a');
   if (a && a.href && !a.href.startsWith('http://localhost')) {
@@ -680,6 +689,28 @@ document.addEventListener('click', function(e) {
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') document.getElementById('ctx-menu').classList.remove('open');
 });
+
+// Custom hover tooltip — fires immediately, no native delay.
+// Any element with [data-tip="..."] gets a styled bubble near the cursor.
+(function() {
+  var tip = document.getElementById('tooltip');
+  if (!tip) return;
+  document.addEventListener('mousemove', function(e) {
+    var el = e.target.closest('[data-tip]');
+    if (el) {
+      var text = el.getAttribute('data-tip');
+      if (tip.textContent !== text) tip.textContent = text;
+      // Offset just above-right of cursor, keep within viewport
+      var x = e.clientX + 12;
+      var y = e.clientY - 28;
+      tip.style.left = x + 'px';
+      tip.style.top = y + 'px';
+      tip.classList.add('visible');
+    } else if (tip.classList.contains('visible')) {
+      tip.classList.remove('visible');
+    }
+  });
+})();
 """
 
 # ---------------------------------------------------------------------------
@@ -1057,9 +1088,7 @@ def render_workdays_sparkline():
         label = f"{d.strftime('%a %b %-d')} — {v} done" if v else f"{d.strftime('%a %b %-d')} — nothing yet"
         hover_zones.append(
             f'<rect x="{i * slot_w:.2f}" y="0" width="{slot_w:.2f}" '
-            f'height="{chart_h:.0f}" fill="transparent">'
-            f'<title>{label}</title>'
-            f'</rect>'
+            f'height="{chart_h:.0f}" fill="transparent" data-tip="{label}"/>'
         )
 
     trendline = (
@@ -1257,6 +1286,7 @@ def build_page(data, view="dashboard"):
         f'<button id="modal-cancel">Cancel</button>'
         f'<button id="modal-save">Add task</button>'
         f'</div></div></div>'
+        f'<div id="tooltip"></div>'
         f'<div id="ctx-menu">'
         f'<div class="ctx-header">Move to</div>'
         f'<div class="ctx-item" data-section="Today\u0027s Focus">Today\u0027s Focus</div>'
