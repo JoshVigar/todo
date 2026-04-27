@@ -224,11 +224,11 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 #topbar {
   display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
 }
-.week-badge {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
-  color: #8b949e; padding: 4px 10px; border: 1px solid #30363d;
-  border-radius: 5px; background: #1c2128;
+.week-title {
+  font-size: 22px; font-weight: 700; letter-spacing: 0.01em;
+  color: #e6edf3; margin-right: 4px;
 }
+.week-title .wk-num { color: #3fb950; }
 #view-switcher {
   display: flex; gap: 4px;
   background: #161b22; border: 1px solid #30363d; border-radius: 6px;
@@ -1241,11 +1241,15 @@ def _view_switcher_html(current, week=""):
         f'<a href="?view={v}" class="vs-btn{" active" if v == current else ""}">{v.title()}</a>'
         for v in VIEWS
     )
-    week_badge = f'<span class="week-badge">{h(week)}</span>' if week else ""
+    week_num = week.lstrip("Ww") if week else ""
+    week_title = (
+        f'<span class="week-title">Week <span class="wk-num">{h(week_num)}</span></span>'
+        if week_num else ""
+    )
     return (
         f'<div id="topbar">'
+        f'{week_title}'
         f'<div id="view-switcher">{items}</div>'
-        f'{week_badge}'
         f'</div>'
     )
 
