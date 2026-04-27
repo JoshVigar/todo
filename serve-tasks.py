@@ -274,8 +274,41 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
   align-items: stretch;
 }
 .col-right { display: flex; flex-direction: column; }
+.completed-anchor { margin-top: auto; }
 @media (max-width: 1100px) {
   .dashboard-grid { grid-template-columns: 1fr; }
+  .completed-anchor { margin-top: 0; }
+}
+.spark-grid {
+  display: grid; grid-template-columns: repeat(7, 1fr);
+  gap: 8px; height: 90px; align-items: end;
+  padding: 4px 4px 0;
+}
+.spark-col {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  height: 100%;
+}
+.spark-count {
+  font-size: 10px; color: #8b949e; font-weight: 600; min-height: 12px;
+}
+.spark-bar-wrap {
+  flex: 1; width: 100%; display: flex; align-items: flex-end;
+  border-bottom: 1px solid #21262d;
+}
+.spark-bar {
+  width: 100%; background: #30363d; border-radius: 3px 3px 0 0;
+  min-height: 2px; transition: height 0.3s ease;
+}
+.spark-bar.today { background: #3fb950; }
+.spark-bar.future { background: #21262d; }
+.spark-label {
+  font-size: 10px; color: #6e7681; text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.spark-col:has(.spark-bar.today) .spark-label { color: #3fb950; font-weight: 700; }
+.spark-total {
+  float: right; color: #8b949e; font-weight: 500;
+  text-transform: none; letter-spacing: 0; font-size: 11px;
 }
 .cmp-section { display: flex; flex-direction: column; }
 .cmp-row {
@@ -952,6 +985,63 @@ def render_completed(tasks):
         + "\n</tbody></table>\n"
     )
 
+def compute_week_completions():
+    """Parse the core file's `## Done` section. Returns {ISO date: count} for current week."""
+    try:
+        text = current_core_path().read_text()
+    except Exception:
+        return {}
+    # Slice off everything before the Done section
+    idx = text.find("\n## Done")
+    if idx < 0:
+        return {}
+    done = text[idx:]
+    counts = {}
+    cur_date = None
+    for line in done.splitlines():
+        m = re.match(r"^###\s+(\d{4}-\d{2}-\d{2})", line)
+        if m:
+            cur_date = m.group(1)
+            counts.setdefault(cur_date, 0)
+            continue
+        if cur_date and line.startswith("- [x]"):
+            counts[cur_date] += 1
+    return counts
+
+
+def render_week_sparkline():
+    counts = compute_week_completions()
+    today = datetime.date.today()
+    monday = today - datetime.timedelta(days=today.weekday())
+    days = [monday + datetime.timedelta(days=i) for i in range(7)]
+    values = [counts.get(d.isoformat(), 0) for d in days]
+    peak = max(values) if any(values) else 1
+    total = sum(values)
+    labels = ["M", "T", "W", "T", "F", "S", "S"]
+    bars = []
+    for d, v, lbl in zip(days, values, labels):
+        height_pct = int((v / peak) * 100) if peak else 0
+        is_today = d == today
+        is_future = d > today
+        cls = "spark-bar"
+        if is_today: cls += " today"
+        if is_future: cls += " future"
+        bars.append(
+            f'<div class="spark-col">'
+            f'<div class="spark-count">{v if v else ""}</div>'
+            f'<div class="spark-bar-wrap"><div class="{cls}" style="height:{height_pct}%"></div></div>'
+            f'<div class="spark-label">{lbl}</div>'
+            f'</div>'
+        )
+    color = SECTION_COLORS["completed today"]
+    return (
+        f'<div class="section-header" style="border-left-color:{color}">'
+        f'This Week <span class="spark-total">{total} done</span>'
+        f'</div>\n'
+        f'<div class="spark-grid">{"".join(bars)}</div>\n'
+    )
+
+
 def render_compact_completed(tasks):
     """Compact rendering for dashboard view: matches the Monitoring/Lower Priority style.
     The id cell uncompletes (handled by .cmp-id-done in the global click handler)."""
@@ -1009,10 +1099,13 @@ def _build_dashboard_body(data, week):
         card(render_compact_section(title, sections_by_title[title].get("tasks", []), week))
         for title in RIGHT if title in sections_by_title
     )
-    # Completed today sits directly under Lower Priority in the right column
+    # Week sparkline fills the gap between Lower Priority and the bottom-anchored Completed Today
+    right_html += card(render_week_sparkline())
+
+    # Completed today is anchored to the bottom of the right column
     completed_html = render_compact_completed(data.get("completed_today", []))
     if completed_html:
-        right_html += card(completed_html)
+        right_html += f'<div class="completed-anchor">{card(completed_html)}</div>'
 
     parts.append(
         f'<div class="dashboard-grid">'
