@@ -20,8 +20,19 @@ def _watch_self():
     mtime = os.path.getmtime(path)
     while True:
         time.sleep(3)
-        if os.path.getmtime(path) != mtime:
+        try:
+            new_mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if new_mtime != mtime:
             print("serve-tasks.py changed — reloading...")
+            # Close the listening socket so the new process can rebind cleanly.
+            # Threads handling in-flight requests get killed by execv (acceptable for a dev tool).
+            if _server is not None:
+                try:
+                    _server.socket.close()
+                except Exception:
+                    pass
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
 threading.Thread(target=_watch_self, daemon=True).start()
@@ -91,13 +102,32 @@ body {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   padding: 3px 0 3px 10px;
-  margin: 24px 0 8px;
+  margin: 0 0 8px;
   border-left: 3px solid #388bfd;
 }
+.task-card {
+  background: #1c2128;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 12px 14px 8px;
+  margin-bottom: 14px;
+}
+.task-card table { margin-bottom: 2px; }
+.task-card .cmp-row:last-child { border-bottom: none; }
+.task-card.focus {
+  border-color: rgba(63, 185, 80, 0.45);
+  background: linear-gradient(180deg, rgba(63, 185, 80, 0.07) 0%, #1c2128 80%);
+  box-shadow: 0 0 0 1px rgba(63, 185, 80, 0.15), 0 2px 8px rgba(63, 185, 80, 0.05);
+}
+.task-card.focus .section-header {
+  color: #3fb950;
+  font-size: 13px;
+}
+.task-card.focus td { font-size: 13px; }
 table { width: 100%; border-collapse: collapse; margin-bottom: 8px; table-layout: fixed; }
 th {
   position: sticky; top: 0; z-index: 1;
-  background: #161b22; color: #8b949e;
+  background: #1c2128; color: #8b949e;
   font-weight: 600; text-align: left;
   padding: 6px 10px; border-bottom: 1px solid #30363d;
   white-space: nowrap;
@@ -108,7 +138,7 @@ td.num:hover { color: #3fb950; }
 td.num:hover::after { content: " ✓"; }
 td.num-done:hover { color: #f85149; }
 td.num-done:hover::after { content: " ↩"; }
-tr:hover td { background: #1c2128 !important; }
+tr:hover td { background: #2d333b !important; }
 tr.row-overdue  td { background: rgba(248, 81, 73, 0.06); }
 tr.row-blocked  td { background: rgba(248, 81, 73, 0.06); }
 tr.row-progress td { background: rgba(56, 139, 253, 0.05); }
@@ -138,20 +168,20 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
 a { color: #58a6ff; text-decoration: none; cursor: pointer; }
 a:hover { text-decoration: underline; }
 p.counts { margin: 6px 0; color: #8b949e; font-size: 12px; }
-#sort-btn {
-  position: fixed; bottom: 16px; right: 16px; z-index: 10;
-  background: #21262d; border: 1px solid #30363d;
-  color: #8b949e; padding: 4px 12px; border-radius: 6px;
-  cursor: pointer; font-size: 12px;
+#floating-actions {
+  position: fixed; top: 16px; right: 16px; z-index: 50;
+  display: flex; gap: 8px;
 }
-#sort-btn:hover { background: #30363d; color: #e6edf3; }
-#add-btn {
-  position: fixed; bottom: 48px; right: 16px; z-index: 10;
-  background: #21262d; border: 1px solid #30363d;
-  color: #8b949e; padding: 4px 12px; border-radius: 6px;
-  cursor: pointer; font-size: 12px;
+#sort-btn, #add-btn {
+  background: #1c2128; border: 1px solid #30363d;
+  color: #e6edf3; padding: 8px 14px; border-radius: 8px;
+  cursor: pointer; font-size: 13px; font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
-#add-btn:hover { background: #30363d; color: #e6edf3; }
+#sort-btn:hover, #add-btn:hover { background: #2d333b; border-color: #484f58; }
+#add-btn { color: #3fb950; }
+#add-btn:hover { background: rgba(63, 185, 80, 0.12); border-color: rgba(63, 185, 80, 0.5); }
 #modal-overlay {
   display: none; position: fixed; inset: 0; z-index: 100;
   background: rgba(0,0,0,0.6); align-items: center; justify-content: center;
@@ -186,6 +216,95 @@ tr[draggable="true"]:active { cursor: grabbing; }
 tr.dragging { opacity: 0.3; }
 tr.drag-over-top > td { border-top: 2px solid #388bfd !important; }
 tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
+#topbar {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+}
+.week-badge {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  color: #8b949e; padding: 4px 10px; border: 1px solid #30363d;
+  border-radius: 5px; background: #1c2128;
+}
+#view-switcher {
+  display: flex; gap: 4px;
+  background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+  padding: 3px; width: fit-content;
+}
+#view-switcher .vs-btn {
+  padding: 4px 12px; border-radius: 4px;
+  color: #8b949e; font-size: 12px; text-decoration: none;
+}
+#view-switcher .vs-btn:hover { color: #e6edf3; background: #21262d; text-decoration: none; }
+#view-switcher .vs-btn.active { background: #30363d; color: #e6edf3; }
+.counts-strip {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  margin-bottom: 14px;
+}
+.cnt-group {
+  background: #1c2128;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 6px 12px;
+  display: inline-flex; align-items: center; gap: 14px;
+  font-size: 13px;
+}
+.cnt-group .label {
+  color: #8b949e; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.06em; font-weight: 700;
+}
+.cnt-group .stat {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: #e6edf3; font-weight: 600;
+}
+.cnt-group .stat .dot {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+}
+.cnt-group .stat .icon { font-size: 12px; }
+.cnt-group.alert { border-color: rgba(248, 81, 73, 0.55); background: rgba(248, 81, 73, 0.08); }
+.cnt-group.alert .stat { color: #f85149; }
+.cnt-group.success .stat { color: #3fb950; }
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+.col-right { display: flex; flex-direction: column; }
+.completed-anchor { margin-top: auto; }
+@media (max-width: 1100px) {
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .completed-anchor { margin-top: 0; }
+}
+.cmp-section { display: flex; flex-direction: column; }
+.cmp-row {
+  display: grid;
+  grid-template-columns: 24px 16px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-bottom: 1px solid #21262d;
+  cursor: grab;
+}
+.cmp-row:hover { background: #2d333b; }
+.cmp-row.dragging { opacity: 0.3; cursor: grabbing; }
+.cmp-row.drag-over-top { border-top: 2px solid #388bfd; }
+.cmp-row.drag-over-bottom { border-bottom: 2px solid #388bfd; }
+.cmp-id {
+  color: #484f58; cursor: pointer; user-select: none; text-align: center; font-size: 11px;
+}
+.cmp-id:hover { color: #3fb950; }
+.cmp-id:hover::after { content: " ✓"; }
+.cmp-pri { font-size: 11px; text-align: center; }
+.cmp-task {
+  color: #e6edf3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cmp-due { color: #8b949e; font-size: 11px; white-space: nowrap; }
+.cmp-row.row-overdue  { background: rgba(248, 81, 73, 0.06); }
+.cmp-row.row-overdue .cmp-due { color: #f85149; font-weight: 600; }
+.cmp-row.row-blocked  { background: rgba(248, 81, 73, 0.06); }
+.cmp-row.row-progress { background: rgba(56, 139, 253, 0.05); }
+.cmp-row.row-due-soon { background: rgba(230, 179, 65, 0.07); }
+.cmp-row.row-due-soon .cmp-due { color: #e3b341; font-weight: 600; }
 #ctx-menu {
   position: fixed; display: none; z-index: 200;
   background: #161b22; border: 1px solid #30363d; border-radius: 6px;
@@ -242,7 +361,7 @@ document.addEventListener('click', function(e) {
   }
 
   // Complete task via # cell on active rows
-  var num_td = e.target.closest('td.num:not(.num-done)');
+  var num_td = e.target.closest('td.num:not(.num-done), .cmp-id');
   if (num_td && num_td.dataset.id) {
     e.preventDefault();
     var row = num_td.closest('tr');
@@ -342,43 +461,44 @@ document.getElementById('modal-save').addEventListener('click', function() {
     });
 });
 
-// Drag-and-drop reordering
+// Drag-and-drop reordering — works on both full table rows and compact rows
+var DRAG_SEL = 'tr[draggable="true"], .cmp-row[draggable="true"]';
 var _dragNum = null, _dragPaused = false;
 document.addEventListener('dragstart', function(e) {
-  var tr = e.target.closest('tr[draggable="true"]');
-  if (!tr) return;
-  _dragNum = parseInt(tr.dataset.id);
+  var el = e.target.closest(DRAG_SEL);
+  if (!el) return;
+  _dragNum = parseInt(el.dataset.id);
   _dragPaused = true;
-  tr.classList.add('dragging');
+  el.classList.add('dragging');
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', String(_dragNum));
 });
 document.addEventListener('dragend', function(e) {
   _dragPaused = false;
   _dragNum = null;
-  document.querySelectorAll('tr.dragging').forEach(function(r) { r.classList.remove('dragging'); });
-  document.querySelectorAll('tr.drag-over-top, tr.drag-over-bottom').forEach(function(r) {
+  document.querySelectorAll('.dragging').forEach(function(r) { r.classList.remove('dragging'); });
+  document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(function(r) {
     r.classList.remove('drag-over-top', 'drag-over-bottom');
   });
 });
 document.addEventListener('dragover', function(e) {
-  var tr = e.target.closest('tr[draggable="true"]');
-  if (!tr || tr.dataset.id == String(_dragNum)) return;
+  var el = e.target.closest(DRAG_SEL);
+  if (!el || el.dataset.id == String(_dragNum)) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
-  document.querySelectorAll('tr.drag-over-top, tr.drag-over-bottom').forEach(function(r) {
+  document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(function(r) {
     r.classList.remove('drag-over-top', 'drag-over-bottom');
   });
-  var mid = tr.getBoundingClientRect().top + tr.getBoundingClientRect().height / 2;
-  tr.classList.add(e.clientY < mid ? 'drag-over-top' : 'drag-over-bottom');
+  var mid = el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2;
+  el.classList.add(e.clientY < mid ? 'drag-over-top' : 'drag-over-bottom');
 });
 document.addEventListener('drop', function(e) {
-  var tr = e.target.closest('tr[draggable="true"]');
-  if (!tr || !_dragNum) return;
+  var el = e.target.closest(DRAG_SEL);
+  if (!el || !_dragNum) return;
   e.preventDefault();
-  var toNum = parseInt(tr.dataset.id);
+  var toNum = parseInt(el.dataset.id);
   if (_dragNum === toNum) return;
-  var before = e.clientY < tr.getBoundingClientRect().top + tr.getBoundingClientRect().height / 2;
+  var before = e.clientY < el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2;
   fetch('/reorder', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -386,13 +506,28 @@ document.addEventListener('drop', function(e) {
   }).then(_refreshTasks);
 });
 
+// View persistence — remember the user's chosen view across sessions.
+(function() {
+  var url = new URL(window.location.href);
+  if (url.searchParams.has('view')) {
+    localStorage.setItem('tasksView', url.searchParams.get('view'));
+  } else {
+    var stored = localStorage.getItem('tasksView');
+    if (stored && stored !== 'dashboard') {
+      url.searchParams.set('view', stored);
+      window.location.replace(url.toString());
+    }
+  }
+})();
+
 // Scroll-preserving auto-refresh (updates both content and styles).
 // Only runs when the tab has focus — switching to another app or tab pauses polling.
 function _refreshTasks() {
   if (_dragPaused) return;
   if (!document.hasFocus()) return;
   var sy = window.scrollY;
-  fetch('/').then(function(r) {
+  // Preserve the current view by including the search string in the fetch URL
+  fetch('/' + window.location.search).then(function(r) {
     if (r.status === 304) return null;
     return r.text();
   }).then(function(html) {
@@ -419,10 +554,10 @@ window.addEventListener('focus', _refreshTasks);
 // Right-click context menu — move tasks between sections without dragging
 var _ctxTaskId = null;
 document.addEventListener('contextmenu', function(e) {
-  var tr = e.target.closest('tr[data-id]');
-  if (!tr) return;
+  var el = e.target.closest('tr[data-id], .cmp-row[data-id]');
+  if (!el) return;
   e.preventDefault();
-  _ctxTaskId = parseInt(tr.dataset.id);
+  _ctxTaskId = parseInt(el.dataset.id);
   var menu = document.getElementById('ctx-menu');
   // Use clientX/clientY because the menu is position:fixed (viewport-relative).
   // pageX/pageY include scroll offset and would push the menu below the click.
@@ -565,9 +700,12 @@ def render_core_section(title, tasks, week):
     if not tasks:
         return ""
     color = section_color(title)
-    label = f"Core Work — {week} · {title}" if week else title
-    # All core sections support drag-and-drop, including in/out of Monitoring and Today's Focus
+    label = title
     draggable = True
+
+    # Hide Why column when no task has a meaningful reason
+    show_why = any((t.get("why") or "—").strip() not in ("", "—") for t in tasks)
+
     rows = []
     for t in tasks:
         rc = row_classes(t)
@@ -575,33 +713,113 @@ def render_core_section(title, tasks, week):
         due = t.get("due") or "—"
         due_html = f'<span class="due">{h(due)}</span>' if is_due_soon(due) else h(due)
         drag_attrs = f' draggable="true" data-id="{task_id}"' if draggable else ""
-        rows.append(
-            f'<tr{rc}{drag_attrs}>'
-            f'<td class="num" data-id="{task_id}">{task_id}</td>'
-            f'<td>{render_pri(t.get("pri"), task_id)}</td>'
-            f'<td>{h(t.get("task",""))}</td>'
-            f'<td>{due_html}</td>'
-            f'<td>{format_age(t.get("from"), week, t.get("added"))}</td>'
-            f'<td>{render_links(t.get("links",[]))}</td>'
-            f'<td>{render_status(t.get("status","open"), task_id)}</td>'
-            f'<td>{h(t.get("why") or "—")}</td>'
-            f'</tr>'
-        )
+        cells = [
+            f'<td class="num" data-id="{task_id}">{task_id}</td>',
+            f'<td>{render_pri(t.get("pri"), task_id)}</td>',
+            f'<td>{h(t.get("task",""))}</td>',
+            f'<td>{due_html}</td>',
+            f'<td>{format_age(t.get("from"), week, t.get("added"))}</td>',
+            f'<td>{render_links(t.get("links",[]))}</td>',
+            f'<td>{render_status(t.get("status","open"), task_id)}</td>',
+        ]
+        if show_why:
+            cells.append(f'<td>{h(t.get("why") or "—")}</td>')
+        rows.append(f'<tr{rc}{drag_attrs}>{"".join(cells)}</tr>')
+    headers = [
+        '<th style="width:32px">#</th>',
+        '<th style="width:48px">Pri</th>',
+        '<th>Task</th>',
+        '<th style="width:110px">Due</th>',
+        '<th style="width:48px">Age</th>',
+        '<th style="width:90px">Link</th>',
+        '<th style="width:120px">Status</th>',
+    ]
+    if show_why:
+        headers.append('<th style="width:14%">Why</th>')
     return (
         f'<div class="section-header" style="border-left-color:{color}">{h(label)}</div>\n'
-        f'<table><thead><tr>'
-        f'<th style="width:2%">#</th>'
-        f'<th style="width:5%">Pri</th>'
-        f'<th>Task</th>'
-        f'<th style="width:9%">Due</th>'
-        f'<th style="width:4%">Age</th>'
-        f'<th style="width:8%">Link</th>'
-        f'<th style="width:7%">Status</th>'
-        f'<th style="width:16%">Why</th>'
-        f'</tr></thead><tbody>\n'
+        f'<table><thead><tr>{"".join(headers)}</tr></thead><tbody>\n'
         + "\n".join(rows)
         + "\n</tbody></table>\n"
     )
+
+def render_compact_section(title, tasks, week):
+    """Compact row rendering for monitoring / lower priority — task name + due, no full table."""
+    if not tasks:
+        return ""
+    color = section_color(title)
+    label = title
+    rows = []
+    for t in tasks:
+        rc = row_classes(t).strip()
+        rc_class = rc[len('class="'):-1] if rc.startswith('class="') else ""
+        task_id = t.get("id", t.get("num", ""))
+        due = t.get("due") or ""
+        due_html = f'<span class="cmp-due">{h(due)}</span>' if due and due != "—" else ""
+        pri = t.get("pri") or ""
+        pri_emoji = PRI_EMOJI.get(pri, "")
+        rows.append(
+            f'<div class="cmp-row {rc_class}" draggable="true" data-id="{task_id}">'
+            f'<span class="cmp-id" data-id="{task_id}">{task_id}</span>'
+            f'<span class="cmp-pri">{pri_emoji}</span>'
+            f'<span class="cmp-task">{h(t.get("task",""))}</span>'
+            f'{due_html}'
+            f'</div>'
+        )
+    return (
+        f'<div class="section-header" style="border-left-color:{color}">{h(label)}</div>\n'
+        f'<div class="cmp-section">{"".join(rows)}</div>\n'
+    )
+
+
+def compute_counts(data):
+    pri = {"P1": 0, "P2": 0, "P3": 0, "P4": 0, "P5": 0}
+    status = {"in_progress": 0, "waiting": 0, "blocked": 0}
+    overdue = 0
+    for s in data.get("sections", []):
+        for t in s.get("tasks", []):
+            p = t.get("pri")
+            if p in pri:
+                pri[p] += 1
+            st = t.get("status", "")
+            if st in status:
+                status[st] += 1
+            if "⚠️" in (t.get("due") or ""):
+                overdue += 1
+    return pri, status, overdue, len(data.get("completed_today", []))
+
+
+def render_counts_strip(data):
+    pri, status, overdue, done = compute_counts(data)
+    pri_colors = {"P1": "#f85149", "P2": "#f0883e", "P3": "#e3b341", "P4": "#79c0ff", "P5": "#8b949e"}
+
+    groups = []
+
+    # Priority group — colour dots speak for themselves, no label needed
+    pri_stats = "".join(
+        f'<span class="stat"><span class="dot" style="background:{pri_colors[p]}"></span>{pri[p]}</span>'
+        for p in ("P1", "P2", "P3", "P4", "P5") if pri[p]
+    )
+    if pri_stats:
+        groups.append(f'<div class="cnt-group">{pri_stats}</div>')
+
+    # Status group
+    status_stats = []
+    if status["in_progress"]: status_stats.append(f'<span class="stat"><span class="icon">🔄</span>{status["in_progress"]}</span>')
+    if status["waiting"]:     status_stats.append(f'<span class="stat"><span class="icon">⏳</span>{status["waiting"]}</span>')
+    if status["blocked"]:     status_stats.append(f'<span class="stat"><span class="icon">🚫</span>{status["blocked"]}</span>')
+    if status_stats:
+        groups.append(f'<div class="cnt-group">{"".join(status_stats)}</div>')
+
+    # Overdue (only show if non-zero)
+    if overdue:
+        groups.append(f'<div class="cnt-group alert"><span class="stat"><span class="icon">⚠️</span>{overdue} overdue</span></div>')
+
+    # Done today (always show — small dopamine hit when it's >0)
+    groups.append(f'<div class="cnt-group success"><span class="stat"><span class="icon">✅</span>{done} done today</span></div>')
+
+    return f'<div class="counts-strip">{"".join(groups)}</div>\n'
+
 
 def render_goalie_section(title, tasks):
     if not tasks:
@@ -658,8 +876,56 @@ def render_completed(tasks):
         + "\n</tbody></table>\n"
     )
 
-def build_page(data):
-    week = data.get("week", "")
+VIEWS = ["dashboard", "classic"]
+
+def _build_dashboard_body(data, week):
+    parts = [render_counts_strip(data)]
+
+    def card(html, focus=False):
+        if not html:
+            return ""
+        cls = "task-card focus" if focus else "task-card"
+        return f'<div class="{cls}">{html}</div>'
+
+    # Goalie sections (if any) — full width above the grid
+    for section in data.get("sections", []):
+        if section.get("type") == "goalie":
+            parts.append(card(render_goalie_section(section.get("title", ""), section.get("tasks", []))))
+
+    # Two-column grid: left = active (full detail), right = monitoring + lower (compact)
+    LEFT  = ("Today's Focus", "High Priority")
+    RIGHT = ("Monitoring", "Lower Priority")
+    sections_by_title = {s.get("title"): s for s in data.get("sections", []) if s.get("type") != "goalie"}
+
+    left_html = "".join(
+        card(
+            render_core_section(title, sections_by_title[title].get("tasks", []), week),
+            focus=(title == "Today's Focus"),
+        )
+        for title in LEFT if title in sections_by_title
+    )
+    right_html = "".join(
+        card(render_compact_section(title, sections_by_title[title].get("tasks", []), week))
+        for title in RIGHT if title in sections_by_title
+    )
+    # Completed today is anchored to the bottom of the right column
+    completed_html = render_completed(data.get("completed_today", []))
+    if completed_html:
+        right_html += f'<div class="completed-anchor">{card(completed_html)}</div>'
+
+    parts.append(
+        f'<div class="dashboard-grid">'
+        f'<div class="col-left">{left_html}</div>'
+        f'<div class="col-right">{right_html}</div>'
+        f'</div>'
+    )
+    if data.get("updated"):
+        parts.append(f'<p class="counts" style="margin-top:16px;color:#484f58">Updated {h(data["updated"])}</p>\n')
+    return "".join(parts)
+
+
+def _build_classic_body(data, week):
+    """Original single-column view: every section as a full table, stacked, no grid or counts strip."""
     parts = []
     for section in data.get("sections", []):
         stype = section.get("type", "core")
@@ -670,17 +936,41 @@ def build_page(data):
         else:
             parts.append(render_core_section(title, tasks, week))
     parts.append(render_completed(data.get("completed_today", [])))
-    if data.get("counts"):
-        parts.append(f'<p class="counts">{h(data["counts"])}</p>\n')
     if data.get("updated"):
         parts.append(f'<p class="counts" style="margin-top:16px;color:#484f58">Updated {h(data["updated"])}</p>\n')
-    body = "".join(parts)
+    return "".join(parts)
+
+
+def _view_switcher_html(current, week=""):
+    items = "".join(
+        f'<a href="?view={v}" class="vs-btn{" active" if v == current else ""}">{v.title()}</a>'
+        for v in VIEWS
+    )
+    week_badge = f'<span class="week-badge">{h(week)}</span>' if week else ""
+    return (
+        f'<div id="topbar">'
+        f'<div id="view-switcher">{items}</div>'
+        f'{week_badge}'
+        f'</div>'
+    )
+
+
+def build_page(data, view="dashboard"):
+    if view not in VIEWS:
+        view = "dashboard"
+    week = data.get("week", "")
+    body = _build_classic_body(data, week) if view == "classic" else _build_dashboard_body(data, week)
+    switcher = _view_switcher_html(view, week)
     return (
         f'<!DOCTYPE html><html><head>'
         f'<meta charset="utf-8">'
+        f'<meta name="tasks-view" content="{view}">'
         f'<title>Tasks</title><style>{CSS}</style>'
-        f'</head><body><div id="tasks-content">{body}</div>'
+        f'</head><body>{switcher}<div id="tasks-content">{body}</div>'
+        f'<div id="floating-actions">'
         f'<button id="add-btn">+ Add</button>'
+        f'<button id="sort-btn">⇕ Sort</button>'
+        f'</div>'
         f'<div id="modal-overlay"><div id="modal">'
         f'<h3>Add Task</h3>'
         f'<label>Task name</label>'
@@ -709,7 +999,6 @@ def build_page(data):
         f'<button id="modal-cancel">Cancel</button>'
         f'<button id="modal-save">Add task</button>'
         f'</div></div></div>'
-        f'<button id="sort-btn">\u21d5 Sort</button>'
         f'<div id="ctx-menu">'
         f'<div class="ctx-header">Move to</div>'
         f'<div class="ctx-item" data-section="Today\u0027s Focus">Today\u0027s Focus</div>'
@@ -1391,38 +1680,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # Conditional GET: return 304 if neither JSON nor source file has changed.
-        # The source file mtime is included so CSS/HTML edits still propagate.
+        # Parse ?view=… so different layouts can be requested
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        view = (params.get("view", ["dashboard"])[0] or "dashboard").lower()
+
+        # Conditional GET via ETag (sub-second precision).
+        # Last-Modified is also sent for browsers that prefer it, but ETag wins
+        # because Last-Modified would truncate to seconds and miss rapid updates
+        # (e.g. a drag-drop write within the same second as the previous fetch).
         try:
-            json_mtime = int(os.path.getmtime(JSON_FILE))
-            src_mtime  = int(os.path.getmtime(os.path.abspath(__file__)))
+            json_mtime = os.path.getmtime(JSON_FILE)
+            src_mtime  = os.path.getmtime(os.path.abspath(__file__))
             combined_mtime = max(json_mtime, src_mtime)
-            last_modified = email.utils.formatdate(combined_mtime, usegmt=True)
+            etag = f'"{combined_mtime:.6f}-{view}"'
+            last_modified = email.utils.formatdate(int(combined_mtime), usegmt=True)
         except Exception:
             combined_mtime = None
+            etag = None
             last_modified = None
 
-        if combined_mtime is not None:
-            ims = self.headers.get("If-Modified-Since")
-            if ims:
-                try:
-                    ims_ts = int(email.utils.parsedate_to_datetime(ims).timestamp())
-                    if ims_ts >= combined_mtime:
-                        self.send_response(304)
-                        self.send_header("Last-Modified", last_modified)
-                        self.end_headers()
-                        return
-                except Exception:
-                    pass
+        if etag is not None:
+            inm = self.headers.get("If-None-Match")
+            if inm and inm == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                if last_modified:
+                    self.send_header("Last-Modified", last_modified)
+                self.end_headers()
+                return
 
         try:
             data = json.loads(JSON_FILE.read_text())
-            page = build_page(data)
+            page = build_page(data, view=view)
         except Exception as e:
             page = f"<pre style='color:#f85149;padding:16px'>Error: {e}</pre>"
 
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
+        if etag:
+            self.send_header("ETag", etag)
         if last_modified:
             self.send_header("Last-Modified", last_modified)
         self.end_headers()
@@ -1462,6 +1758,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"Tasks at http://localhost:{PORT}")
-    _server = http.server.HTTPServer(("", PORT), Handler)
+    _server = http.server.ThreadingHTTPServer(("", PORT), Handler)
     _server.socket.set_inheritable(False)
     _server.serve_forever()
