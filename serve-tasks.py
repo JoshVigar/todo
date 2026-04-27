@@ -280,8 +280,8 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
   .completed-anchor { margin-top: 0; }
 }
 .spark-grid {
-  display: grid; grid-template-columns: repeat(7, 1fr);
-  gap: 8px; height: 90px; align-items: end;
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  gap: 12px; height: 90px; align-items: end;
   padding: 4px 4px 0;
 }
 .spark-col {
@@ -985,58 +985,68 @@ def render_completed(tasks):
         + "\n</tbody></table>\n"
     )
 
-def compute_week_completions():
-    """Parse the core file's `## Done` section. Returns {ISO date: count} for current week."""
-    try:
-        text = current_core_path().read_text()
-    except Exception:
-        return {}
-    # Slice off everything before the Done section
-    idx = text.find("\n## Done")
-    if idx < 0:
-        return {}
-    done = text[idx:]
+def compute_completions(dates):
+    """Returns {ISO date: count} for the given dates by reading whichever core files cover them."""
+    weeks_needed = set()
+    for d in dates:
+        y, w, _ = d.isocalendar()
+        weeks_needed.add((y, w))
     counts = {}
-    cur_date = None
-    for line in done.splitlines():
-        m = re.match(r"^###\s+(\d{4}-\d{2}-\d{2})", line)
-        if m:
-            cur_date = m.group(1)
-            counts.setdefault(cur_date, 0)
+    for y, w in weeks_needed:
+        path = Path.home() / "todo" / "journal" / f"{y}-W{w:02d}-core.md"
+        try:
+            text = path.read_text()
+        except Exception:
             continue
-        if cur_date and line.startswith("- [x]"):
-            counts[cur_date] += 1
+        idx = text.find("\n## Done")
+        if idx < 0:
+            continue
+        cur_date = None
+        for line in text[idx:].splitlines():
+            m = re.match(r"^###\s+(\d{4}-\d{2}-\d{2})", line)
+            if m:
+                cur_date = m.group(1)
+                continue
+            if cur_date and line.startswith("- [x]"):
+                counts[cur_date] = counts.get(cur_date, 0) + 1
     return counts
 
 
-def render_week_sparkline():
-    counts = compute_week_completions()
+def last_n_workdays(today, n=5):
+    """Walk back from today, collecting weekdays (Mon–Fri) until we have n. Returned in chronological order."""
+    days = []
+    d = today
+    while len(days) < n:
+        if d.weekday() < 5:
+            days.append(d)
+        d -= datetime.timedelta(days=1)
+    return list(reversed(days))
+
+
+def render_workdays_sparkline():
     today = datetime.date.today()
-    monday = today - datetime.timedelta(days=today.weekday())
-    days = [monday + datetime.timedelta(days=i) for i in range(7)]
+    days = last_n_workdays(today, 5)
+    counts = compute_completions(days)
     values = [counts.get(d.isoformat(), 0) for d in days]
     peak = max(values) if any(values) else 1
     total = sum(values)
-    labels = ["M", "T", "W", "T", "F", "S", "S"]
+    weekday_letters = ["M", "T", "W", "T", "F"]
     bars = []
-    for d, v, lbl in zip(days, values, labels):
+    for d, v in zip(days, values):
         height_pct = int((v / peak) * 100) if peak else 0
         is_today = d == today
-        is_future = d > today
-        cls = "spark-bar"
-        if is_today: cls += " today"
-        if is_future: cls += " future"
+        cls = "spark-bar today" if is_today else "spark-bar"
         bars.append(
             f'<div class="spark-col">'
             f'<div class="spark-count">{v if v else ""}</div>'
             f'<div class="spark-bar-wrap"><div class="{cls}" style="height:{height_pct}%"></div></div>'
-            f'<div class="spark-label">{lbl}</div>'
+            f'<div class="spark-label">{weekday_letters[d.weekday()]}</div>'
             f'</div>'
         )
     color = SECTION_COLORS["completed today"]
     return (
         f'<div class="section-header" style="border-left-color:{color}">'
-        f'This Week <span class="spark-total">{total} done</span>'
+        f'Last 5 workdays <span class="spark-total">{total} done</span>'
         f'</div>\n'
         f'<div class="spark-grid">{"".join(bars)}</div>\n'
     )
@@ -1099,8 +1109,8 @@ def _build_dashboard_body(data, week):
         card(render_compact_section(title, sections_by_title[title].get("tasks", []), week))
         for title in RIGHT if title in sections_by_title
     )
-    # Week sparkline fills the gap between Lower Priority and the bottom-anchored Completed Today
-    right_html += card(render_week_sparkline())
+    # Sparkline fills the gap between Lower Priority and the bottom-anchored Completed Today
+    right_html += card(render_workdays_sparkline())
 
     # Completed today is anchored to the bottom of the right column
     completed_html = render_compact_completed(data.get("completed_today", []))
