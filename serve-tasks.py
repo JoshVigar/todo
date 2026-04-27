@@ -86,6 +86,10 @@ SECTION_COLORS = {
     "goalie":          "#bc8cff",
 }
 
+# Serialise mutating endpoints. ThreadingHTTPServer otherwise interleaves
+# read-mutate-write of tasks-live.json across handlers and clobbers writes.
+_state_lock = threading.Lock()
+
 _TASK_NAME_BOUNDARY = re.compile(r"\s+(?:—|\(|_\()")
 
 def _extract_task_name(line):
@@ -429,23 +433,22 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 #ctx-menu .ctx-item.danger:hover { background: rgba(248, 81, 73, 0.12); }
 """
 
-SCRIPT = """\
-var STATUS_NEXT = {
-  'open':'in_progress', 'todo':'in_progress',
-  'in_progress':'waiting', 'waiting':'open', 'blocked':'in_progress'
-};
-var STATUS_LABEL = {
-  'in_progress':'\U0001F504 In Progress', 'waiting':'\u23F3 Waiting',
-  'open':'\U0001F513 Open', 'todo':'\U0001F4CB To Do'
-};
-var STATUS_CLS = {
-  'in_progress':'b-progress', 'waiting':'b-waiting',
-  'open':'b-open', 'todo':'b-todo'
-};
-var PRI_NEXT = {'P1':'P2','P2':'P3','P3':'P4','P4':'P5','P5':'P1'};
-var PRI_LABEL = {'P1':'P1 \U0001F534','P2':'P2 \U0001F7E0','P3':'P3 \U0001F7E1','P4':'P4 \U0001F535','P5':'P5 \u23F8\uFE0F'};
-var PRI_CLS   = {'P1':'p1','P2':'p2','P3':'p3','P4':'p4','P5':'p5'};
+def _js_consts():
+    """Emit JS map literals from the Python constants — single source of truth."""
+    status_label = {k: v[0] for k, v in STATUS_MAP.items()}
+    status_cls   = {k: v[1] for k, v in STATUS_MAP.items()}
+    pri_next     = {k: v for k, v in PRI_CYCLE.items() if k}
+    return (
+        f"var STATUS_NEXT = {json.dumps(dict(STATUS_CYCLE))};\n"
+        f"var STATUS_LABEL = {json.dumps(status_label, ensure_ascii=False)};\n"
+        f"var STATUS_CLS = {json.dumps(status_cls)};\n"
+        f"var PRI_NEXT = {json.dumps(pri_next)};\n"
+        f"var PRI_LABEL = {json.dumps(PRI_LABEL, ensure_ascii=False)};\n"
+        f"var PRI_CLS = {json.dumps(PRI_CSS)};\n"
+    )
 
+
+SCRIPT = """\
 document.addEventListener('click', function(e) {
   // Uncomplete via # cell on completed rows (table view OR compact dashboard view)
   var done_td = e.target.closest('td.num-done, .cmp-id-done');
@@ -1354,7 +1357,7 @@ def build_page(data, view="dashboard"):
         f'<div class="ctx-divider"></div>'
         f'<div class="ctx-item danger" data-action="cancel">Cancel task</div>'
         f'</div>'
-        f'<script>{SCRIPT}</script>'
+        f'<script>{_js_consts()}{SCRIPT}</script>'
         f'</body></html>'
     )
 
@@ -2063,28 +2066,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length)) if length else {}
-        if self.path == "/update":
-            ok = apply_status_change(body.get("id"))
-        elif self.path == "/complete":
-            ok = apply_status_change(body.get("id"), force_status="done")
-        elif self.path == "/update-pri":
-            ok = apply_priority_update(body.get("id"))
-        elif self.path == "/uncomplete":
-            ok = apply_uncomplete(body.get("id"))
-        elif self.path == "/sort":
-            ok = apply_sort()
-        elif self.path == "/reorder":
-            ok = apply_reorder(body.get("from"), body.get("to"), body.get("before", True))
-        elif self.path == "/move-section":
-            ok = apply_move_section(body.get("id"), body.get("section"))
-        elif self.path == "/cancel":
-            ok = apply_cancel(body.get("id"))
-        elif self.path == "/add":
-            ok = apply_add(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
-            return
+        with _state_lock:
+            if self.path == "/update":
+                ok = apply_status_change(body.get("id"))
+            elif self.path == "/complete":
+                ok = apply_status_change(body.get("id"), force_status="done")
+            elif self.path == "/update-pri":
+                ok = apply_priority_update(body.get("id"))
+            elif self.path == "/uncomplete":
+                ok = apply_uncomplete(body.get("id"))
+            elif self.path == "/sort":
+                ok = apply_sort()
+            elif self.path == "/reorder":
+                ok = apply_reorder(body.get("from"), body.get("to"), body.get("before", True))
+            elif self.path == "/move-section":
+                ok = apply_move_section(body.get("id"), body.get("section"))
+            elif self.path == "/cancel":
+                ok = apply_cancel(body.get("id"))
+            elif self.path == "/add":
+                ok = apply_add(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
         self.send_response(200 if ok else 400)
         self.end_headers()
 
