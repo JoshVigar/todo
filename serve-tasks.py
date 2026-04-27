@@ -1038,6 +1038,13 @@ def compute_completions(dates):
     return counts
 
 
+def ordinal(n):
+    """Day-of-month with ordinal suffix: 1 -> 1st, 22 -> 22nd, 11 -> 11th."""
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
+    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+
 def last_n_workdays(today, n=5):
     """Walk back from today, collecting weekdays (Mon–Fri) until we have n. Returned in chronological order."""
     days = []
@@ -1085,7 +1092,8 @@ def render_workdays_sparkline():
         points.append(f"{cx:.2f},{y:.2f}")
         # Full-column transparent hover zone gives a generous hit target,
         # especially for empty days where the bar is just 1.5px tall.
-        label = f"{d.strftime('%a %b %-d')} — {v} done" if v else f"{d.strftime('%a %b %-d')} — nothing yet"
+        date_str = f"{d.strftime('%a %b')} {ordinal(d.day)}"
+        label = f"{date_str} — {v} done" if v else f"{date_str} — nothing yet"
         hover_zones.append(
             f'<rect x="{i * slot_w:.2f}" y="0" width="{slot_w:.2f}" '
             f'height="{chart_h:.0f}" fill="transparent" data-tip="{label}"/>'
@@ -1117,7 +1125,7 @@ def render_workdays_sparkline():
         labels.append(
             f'<div class="{cls}">'
             f'<span class="spark-day">{weekday_abbr[d.weekday()]}</span>'
-            f'<span class="spark-date">{d.day}</span>'
+            f'<span class="spark-date">{ordinal(d.day)}</span>'
             f'</div>'
         )
 
