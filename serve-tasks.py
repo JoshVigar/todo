@@ -86,6 +86,42 @@ SECTION_COLORS = {
     "goalie":          "#bc8cff",
 }
 
+_TASK_NAME_BOUNDARY = re.compile(r"\s+(?:—|\(|_\()")
+
+def _extract_task_name(line):
+    """Pull the task name out of a core-file line like '- [X] 🟠 Task name — due 17:00 (link)'.
+    Returns None if the line isn't a task line."""
+    m = re.match(r"\s*- \[.\]\s+", line)
+    if not m:
+        return None
+    body = line[m.end():]
+    for emoji in PRI_EMOJI.values():
+        if body.startswith(emoji + " "):
+            body = body[len(emoji) + 1:]
+            break
+    cut = _TASK_NAME_BOUNDARY.search(body)
+    return (body[:cut.start()] if cut else body).rstrip()
+
+
+def find_task_line(lines, task_name, *, end_idx=None, marker=None):
+    """Find the first line whose extracted task name == task_name (case-insensitive).
+    `marker` like '[x]' constrains the state marker; None matches any.
+    Returns the index, or None if no match."""
+    target = task_name.strip().lower()
+    if not target:
+        return None
+    scan = lines if end_idx is None else lines[:end_idx]
+    for i, line in enumerate(scan):
+        stripped = line.strip()
+        if not stripped.startswith("- ["):
+            continue
+        if marker and not stripped.startswith(f"- {marker}"):
+            continue
+        name = _extract_task_name(line)
+        if name is not None and name.lower() == target:
+            return i
+    return None
+
 CSS = """\
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -1392,13 +1428,7 @@ def update_core_file(task_name, new_status, now):
     # Find ## Done boundary
     done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
 
-    # Find the task line in the active area
-    task_idx = None
-    for i, line in enumerate(lines[:done_section]):
-        if line.strip().startswith("- [") and task_name.lower() in line.lower():
-            task_idx = i
-            break
-
+    task_idx = find_task_line(lines, task_name, end_idx=done_section)
     if task_idx is None:
         return
 
@@ -1441,25 +1471,23 @@ def update_core_file_priority(task_name, new_pri, now):
     done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
     all_emojis = set(PRI_EMOJI.values())
     new_emoji = PRI_EMOJI.get(new_pri)
-    for i, line in enumerate(lines[:done_section]):
-        if line.strip().startswith("- [") and task_name.lower() in line.lower():
-            has_emoji = any(e in line for e in all_emojis)
-            if new_emoji:
-                if has_emoji:
-                    for e in all_emojis:
-                        if e in line:
-                            lines[i] = line.replace(e, new_emoji, 1)
-                            break
-                else:
-                    # Insert emoji after "- [X] "
-                    lines[i] = re.sub(r"(- \[.\] )", rf"\1{new_emoji} ", line, count=1)
-            else:
-                # Remove emoji (cycling to null)
+    i = find_task_line(lines, task_name, end_idx=done_section)
+    if i is not None:
+        line = lines[i]
+        has_emoji = any(e in line for e in all_emojis)
+        if new_emoji:
+            if has_emoji:
                 for e in all_emojis:
                     if e in line:
-                        lines[i] = line.replace(e + " ", "", 1)
+                        lines[i] = line.replace(e, new_emoji, 1)
                         break
-            break
+            else:
+                lines[i] = re.sub(r"(- \[.\] )", rf"\1{new_emoji} ", line, count=1)
+        else:
+            for e in all_emojis:
+                if e in line:
+                    lines[i] = line.replace(e + " ", "", 1)
+                    break
     core_path.write_text("\n".join(lines))
 
 
@@ -1607,15 +1635,15 @@ def apply_uncomplete(num):
         lines = core_path.read_text().split("\n")
         done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
         emoji_to_pri = {v: k for k, v in PRI_EMOJI.items()}
+        # Search the Done area only, then translate back to a global index.
+        rel_idx = find_task_line(lines[done_section:], task_name, marker="[x]")
         done_line_idx = None
-        for i, line in enumerate(lines[done_section:], done_section):
-            if line.strip().startswith("- [x]") and task_name.lower() in line.lower():
-                done_line_idx = i
-                for emoji, p in emoji_to_pri.items():
-                    if emoji in line:
-                        pri = p
-                        break
-                break
+        if rel_idx is not None:
+            done_line_idx = done_section + rel_idx
+            for emoji, p in emoji_to_pri.items():
+                if emoji in lines[done_line_idx]:
+                    pri = p
+                    break
 
         if done_line_idx is not None:
             original = lines[done_line_idx]
@@ -1630,8 +1658,8 @@ def apply_uncomplete(num):
             lines.insert(done_section, restored)
             core_path.write_text("\n".join(lines))
 
-    # Remove from completed_today
-    data["completed_today"] = [t for t in data["completed_today"] if t.get("num") != num]
+    # Remove from completed_today (by stable id, not num)
+    data["completed_today"] = [t for t in data["completed_today"] if t.get("id") != num]
 
     # Decrement counts
     counts = data.get("counts", "")
@@ -1645,8 +1673,9 @@ def apply_uncomplete(num):
         counts = re.sub(r" · 0 on [0-9-]+", "", counts)
         data["counts"] = counts
 
-    # Add back to JSON — pick section by priority
+    # Add back to JSON — pick section by priority. Carry the stable id forward.
     new_task = {
+        "id": num,
         "num": num,
         "pri": pri,
         "task": task_name,
@@ -1663,6 +1692,7 @@ def apply_uncomplete(num):
     if target:
         target["tasks"].append(new_task)
 
+    renumber_tasks(data)
     data["updated"] = now.strftime("%Y-%m-%d %H:%M")
     JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
     return True
@@ -1744,11 +1774,7 @@ def apply_cancel(task_id):
     if core_path.exists():
         lines = core_path.read_text().split("\n")
         done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
-        task_idx = next(
-            (i for i, line in enumerate(lines[:done_section])
-             if line.strip().startswith("- [") and task_name.lower() in line.lower()),
-            None,
-        )
+        task_idx = find_task_line(lines, task_name, end_idx=done_section)
         if task_idx is not None:
             original = lines[task_idx]
             updated = re.sub(r"\[.\]", "[/]", original, count=1).rstrip()
