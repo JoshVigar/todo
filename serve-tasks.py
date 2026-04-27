@@ -124,6 +124,11 @@ body {
   font-size: 13px;
 }
 .task-card.focus td { font-size: 13px; }
+.task-card.high-priority {
+  border-color: rgba(240, 136, 62, 0.35);
+  background: linear-gradient(180deg, rgba(240, 136, 62, 0.05) 0%, #1c2128 80%);
+}
+.task-card.high-priority .section-header { color: #f0883e; }
 table { width: 100%; border-collapse: collapse; margin-bottom: 8px; table-layout: fixed; }
 th {
   position: sticky; top: 0; z-index: 1;
@@ -301,6 +306,9 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 .cmp-pri { font-size: 11px; text-align: center; }
 .cmp-task {
   color: #e6edf3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cmp-row.expanded .cmp-task {
+  white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.4;
 }
 .cmp-due { color: #8b949e; font-size: 11px; white-space: nowrap; }
 .cmp-row.row-overdue  { background: rgba(248, 81, 73, 0.06); }
@@ -975,10 +983,10 @@ VIEWS = ["dashboard", "classic"]
 def _build_dashboard_body(data, week):
     parts = [render_counts_strip(data)]
 
-    def card(html, focus=False):
+    def card(html, variant=""):
         if not html:
             return ""
-        cls = "task-card focus" if focus else "task-card"
+        cls = "task-card" + (f" {variant}" if variant else "")
         return f'<div class="{cls}">{html}</div>'
 
     # Goalie sections (if any) — full width above the grid
@@ -989,12 +997,13 @@ def _build_dashboard_body(data, week):
     # Two-column grid: left = active (full detail), right = monitoring + lower (compact)
     LEFT  = ("Today's Focus", "High Priority")
     RIGHT = ("Monitoring", "Lower Priority")
+    CARD_VARIANTS = {"Today's Focus": "focus", "High Priority": "high-priority"}
     sections_by_title = {s.get("title"): s for s in data.get("sections", []) if s.get("type") != "goalie"}
 
     left_html = "".join(
         card(
             render_core_section(title, sections_by_title[title].get("tasks", []), week),
-            focus=(title == "Today's Focus"),
+            variant=CARD_VARIANTS.get(title, ""),
         )
         for title in LEFT if title in sections_by_title
     )
