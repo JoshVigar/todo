@@ -831,6 +831,9 @@ document.addEventListener('click', function(e) {
     if (item.dataset.action === 'cancel') {
       endpoint = '/cancel';
       payload = {id: _ctxTaskId};
+    } else if (item.dataset.action === 'complete') {
+      endpoint = '/complete';
+      payload = {id: _ctxTaskId};
     } else {
       endpoint = '/move-section';
       payload = {id: _ctxTaskId, section: item.dataset.section};
@@ -839,7 +842,7 @@ document.addEventListener('click', function(e) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
-    }).then(_refreshTasks);
+    }).then(function(r) { if (r.ok) _refreshTasks(); });
     document.getElementById('ctx-menu').classList.remove('open');
     _ctxTaskId = null;
     return;
@@ -1315,7 +1318,8 @@ def render_workdays_sparkline():
 
 def render_compact_completed(tasks):
     """Compact rendering for dashboard view: matches the Monitoring/Lower Priority style.
-    The id cell uncompletes (handled by .cmp-id-done in the global click handler)."""
+    The id cell uncompletes (handled by .cmp-id-done in the global click handler).
+    Click the task name to expand the detail panel — completion time + link + source."""
     if not tasks:
         return ""
     color = SECTION_COLORS["completed today"]
@@ -1331,6 +1335,20 @@ def render_compact_completed(tasks):
             f'<span class="cmp-task">{h(t.get("task",""))}</span>'
             f'{time_html}'
             f'</div>'
+        )
+        detail_parts = [
+            f'<span class="field"><span class="field-label">Time</span>{h(time) if time else "—"}</span>',
+        ]
+        if t.get("from_section"):
+            detail_parts.append(
+                f'<span class="field"><span class="field-label">From</span>{h(t["from_section"])}</span>'
+            )
+        if t.get("links"):
+            detail_parts.append(
+                f'<span class="field"><span class="field-label">Links</span>{render_links(t.get("links"))}</span>'
+            )
+        rows.append(
+            f'<div class="cmp-detail" data-id="{task_id}">{"".join(detail_parts)}</div>'
         )
     return (
         _section_header("Completed today", color)
@@ -1486,6 +1504,7 @@ def build_page(data, view="dashboard"):
         f'<div class="ctx-item" data-section="{SEC_HIGH}">{SEC_HIGH}</div>'
         f'<div class="ctx-item" data-section="{SEC_LOW}">{SEC_LOW}</div>'
         f'<div class="ctx-divider"></div>'
+        f'<div class="ctx-item" data-action="complete">✅ Mark as done</div>'
         f'<div class="ctx-item danger" data-action="cancel">Cancel task</div>'
         f'</div>'
         f'<script>{_js_consts()}{SCRIPT}</script>'
@@ -1844,6 +1863,7 @@ def apply_status_change(num, force_status=None):
             "task": task_name,
             "links": task.get("links", []),
             "time": now.strftime("%H:%M"),
+            "from_section": source_section.get("title", ""),
         })
     else:
         task["status"] = new_status
