@@ -563,22 +563,30 @@ document.addEventListener('click', function(e) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(done_td.dataset.id)})
-    }).then(_refreshTasks);
+    }).then(function(r) {
+      if (r.ok) _refreshTasks();
+      else if (row) row.style.opacity = '';
+    });
     return;
   }
 
-  // Complete task via # cell on active rows
+  // Complete task via # cell on active rows (table OR compact dashboard)
   var num_td = e.target.closest('td.num:not(.num-done), .cmp-id');
   if (num_td && num_td.dataset.id) {
     e.preventDefault();
-    var row = num_td.closest('tr');
-    row.style.opacity = '0.35';
-    row.style.transition = 'opacity 0.2s';
+    var row = num_td.closest('tr, .cmp-row');
+    if (row) {
+      row.style.opacity = '0.35';
+      row.style.transition = 'opacity 0.2s';
+    }
     fetch('/complete', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(num_td.dataset.id)})
-    }).then(_refreshTasks);
+    }).then(function(r) {
+      if (r.ok) _refreshTasks();
+      else if (row) row.style.opacity = '';
+    });
     return;
   }
 
@@ -741,10 +749,10 @@ document.addEventListener('drop', function(e) {
 })();
 
 // Scroll-preserving auto-refresh (updates both content and styles).
-// Only runs when the tab has focus — switching to another app or tab pauses polling.
+// Always fires for SSE pushes and click-driven refreshes; the timed
+// polling backup uses `_pollIfFocused` which adds the focus guard.
 function _refreshTasks() {
   if (_dragPaused) return;
-  if (!document.hasFocus()) return;
   var sy = window.scrollY;
   // Preserve which compact-row detail panels are currently expanded across the swap
   var openIds = Array.prototype.map.call(
@@ -793,7 +801,10 @@ function _connectSSE() {
   } catch (e) {}
 }
 _connectSSE();
-setInterval(_refreshTasks, 30000);
+function _pollIfFocused() {
+  if (document.hasFocus()) _refreshTasks();
+}
+setInterval(_pollIfFocused, 30000);
 // Refresh immediately on regaining focus so you see fresh data as soon as you switch back.
 window.addEventListener('focus', _refreshTasks);
 
