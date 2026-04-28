@@ -692,10 +692,10 @@ document.addEventListener('drop', function(e) {
 })();
 
 // Scroll-preserving auto-refresh (updates both content and styles).
-// Only runs when the tab has focus — switching to another app or tab pauses polling.
+// The interval is started on focus and stopped on blur so a backgrounded tab
+// does no work at all; `_dragPaused` suppresses ticks during drag-and-drop.
 function _refreshTasks() {
   if (_dragPaused) return;
-  if (!document.hasFocus()) return;
   var sy = window.scrollY;
   // Preserve which compact-row detail panels are currently expanded across the swap
   var openIds = Array.prototype.map.call(
@@ -731,9 +731,20 @@ function _refreshTasks() {
     }
   }).catch(function(){});
 }
-setInterval(_refreshTasks, 2000);
-// Refresh immediately on regaining focus so you see fresh data as soon as you switch back.
-window.addEventListener('focus', _refreshTasks);
+var _refreshTimer = null;
+function _startRefresh() {
+  if (_refreshTimer !== null) return;
+  _refreshTasks();
+  _refreshTimer = setInterval(_refreshTasks, 2000);
+}
+function _stopRefresh() {
+  if (_refreshTimer === null) return;
+  clearInterval(_refreshTimer);
+  _refreshTimer = null;
+}
+if (document.hasFocus()) _startRefresh();
+window.addEventListener('focus', _startRefresh);
+window.addEventListener('blur', _stopRefresh);
 
 // Right-click context menu — move tasks between sections without dragging
 var _ctxTaskId = null;
@@ -1488,10 +1499,10 @@ def set_today_focus(task_names):
 def update_core_file(task_name, new_status, now, week=None):
     """Update the task's state marker in the core markdown file."""
     core_path = current_core_path(week)
-    if not core_path.exists():
+    try:
+        lines = core_path.read_text().split("\n")
+    except FileNotFoundError:
         return
-
-    lines = core_path.read_text().split("\n")
     today_str = now.strftime("%Y-%m-%d")
     ts = now.strftime("%Y-%m-%d %H:%M")
 
@@ -1519,9 +1530,10 @@ def update_core_file(task_name, new_status, now, week=None):
 def update_core_file_priority(task_name, new_pri, now, week=None):
     """Swap the priority emoji on the task line in the core markdown file."""
     core_path = current_core_path(week)
-    if not core_path.exists():
+    try:
+        lines = core_path.read_text().split("\n")
+    except FileNotFoundError:
         return
-    lines = core_path.read_text().split("\n")
     done_section = _done_boundary(lines, len(lines))
     all_emojis = set(PRI_EMOJI.values())
     new_emoji = PRI_EMOJI.get(new_pri)
@@ -1574,12 +1586,15 @@ def renumber_tasks(data):
 
 def next_task_id(data):
     """Return the next available stable task ID."""
-    max_id = max(
-        [t.get("id", 0) for s in data.get("sections", []) for t in s.get("tasks", [])] +
-        [t.get("id", 0) for t in data.get("completed_today", [])] +
-        [0]
+    ids = (
+        t.get("id", 0)
+        for collection in (
+            (t for s in data.get("sections", []) for t in s.get("tasks", [])),
+            data.get("completed_today", []),
+        )
+        for t in collection
     )
-    return max_id + 1
+    return max(ids, default=0) + 1
 
 def find_task_by_id(data, task_id):
     """Return (task, section) for the given stable id, or (None, None)."""
@@ -1596,9 +1611,10 @@ def find_task_by_id(data, task_id):
 def sync_core_file_order(data):
     """Reorder active task lines in the core file to match the current JSON task order."""
     core_path = current_core_path(data.get("week"))
-    if not core_path.exists():
+    try:
+        lines = core_path.read_text().split("\n")
+    except FileNotFoundError:
         return
-    lines = core_path.read_text().split("\n")
     done_idx = _done_boundary(lines, len(lines))
 
     # Ordered task names from JSON
@@ -1680,8 +1696,11 @@ def apply_uncomplete(num):
     # Read core file to get priority and reconstruct the active line
     core_path = current_core_path(data.get("week"))
     pri = None
-    if core_path.exists():
+    try:
         lines = core_path.read_text().split("\n")
+    except FileNotFoundError:
+        lines = None
+    if lines is not None:
         done_section = _done_boundary(lines, len(lines))
         emoji_to_pri = {v: k for k, v in PRI_EMOJI.items()}
         # Search the Done area only, then translate back to a global index.
@@ -1792,8 +1811,11 @@ def apply_cancel(task_id):
 
     # Update core file: change marker to [/], append _(cancelled: ts)_, move to ## Cancelled
     core_path = current_core_path(data.get("week"))
-    if core_path.exists():
+    try:
         lines = core_path.read_text().split("\n")
+    except FileNotFoundError:
+        lines = None
+    if lines is not None:
         done_section = _done_boundary(lines, len(lines))
         task_idx = find_task_line(lines, task_name, end_idx=done_section)
         if task_idx is not None:
@@ -1929,9 +1951,10 @@ def apply_reorder(from_num, to_num, before=True):
 def add_to_core_file(name, pri, due, why, links, week=None):
     """Insert a new active task line before ## Done in the core file."""
     core_path = current_core_path(week)
-    if not core_path.exists():
+    try:
+        lines = core_path.read_text().split("\n")
+    except FileNotFoundError:
         return
-    lines = core_path.read_text().split("\n")
     emoji = PRI_EMOJI.get(pri, "")
     task_line = f"- [ ] {emoji} {name}" if emoji else f"- [ ] {name}"
     if due and due not in ("—", "\u2014"):
