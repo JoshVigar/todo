@@ -107,6 +107,46 @@ def _extract_task_name(line):
     return (body[:cut.start()] if cut else body).rstrip()
 
 
+def _done_boundary(lines, default=None):
+    """Index of the '## Done' header line, or `default` if absent."""
+    return next((i for i, l in enumerate(lines) if l.strip() == "## Done"), default)
+
+
+def _insert_under_dated_section(lines, section_title, dated_line, today_str, *, anchor_after=None):
+    """Insert `dated_line` under `## {section_title}` → `### {today_str}`.
+    If the section doesn't exist, create one — placed after `## {anchor_after}`
+    if given (and present), else appended at end of file."""
+    section_marker = f"## {section_title}"
+    section_idx = next((i for i, l in enumerate(lines) if l.strip() == section_marker), None)
+
+    if section_idx is None:
+        block = ["", section_marker, "", f"### {today_str}", dated_line]
+        anchor_idx = (
+            next((i for i, l in enumerate(lines) if l.strip() == f"## {anchor_after}"), None)
+            if anchor_after else None
+        )
+        if anchor_idx is None:
+            lines.extend(block)
+        else:
+            insert_at = next(
+                (i for i, l in enumerate(lines[anchor_idx + 1:], anchor_idx + 1) if l.startswith("## ")),
+                len(lines),
+            )
+            for j, item in enumerate(block):
+                lines.insert(insert_at + j, item)
+        return
+
+    ins = section_idx + 1
+    if ins < len(lines) and lines[ins] == "":
+        ins += 1
+    if ins < len(lines) and lines[ins] == f"### {today_str}":
+        lines.insert(ins + 1, dated_line)
+    else:
+        lines.insert(section_idx + 1, dated_line)
+        lines.insert(section_idx + 1, f"### {today_str}")
+        lines.insert(section_idx + 1, "")
+
+
 def find_task_line(lines, task_name, *, end_idx=None, marker=None):
     """Find the first line whose extracted task name == task_name (case-insensitive).
     `marker` like '[x]' constrains the state marker; None matches any.
@@ -1438,7 +1478,7 @@ def update_core_file(task_name, new_status, now, week=None):
     ts = now.strftime("%Y-%m-%d %H:%M")
 
     # Find ## Done boundary
-    done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+    done_section = _done_boundary(lines, len(lines))
 
     task_idx = find_task_line(lines, task_name, end_idx=done_section)
     if task_idx is None:
@@ -1447,27 +1487,11 @@ def update_core_file(task_name, new_status, now, week=None):
     original = lines[task_idx]
 
     if new_status == "done":
-        # Mark done + append timestamp
         updated = re.sub(r"\[.\]", "[x]", original, count=1).rstrip()
         if "_(completed:" not in updated:
             updated += f" _(completed: {ts})_"
-        # Remove from active list
         lines.pop(task_idx)
-        # Recalculate done_section index after pop
-        done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), None)
-        if done_section is None:
-            lines += ["", "## Done", "", f"### {today_str}", updated]
-        else:
-            # Insert after ## Done, under today's heading (newest first)
-            ins = done_section + 1
-            if ins < len(lines) and lines[ins] == "":
-                ins += 1
-            if ins < len(lines) and lines[ins] == f"### {today_str}":
-                lines.insert(ins + 1, updated)
-            else:
-                lines.insert(done_section + 1, updated)
-                lines.insert(done_section + 1, f"### {today_str}")
-                lines.insert(done_section + 1, "")
+        _insert_under_dated_section(lines, "Done", updated, today_str)
     else:
         marker = STATE_MARKER.get(new_status, "[ ]")
         lines[task_idx] = re.sub(r"\[.\]", marker, original, count=1)
@@ -1480,7 +1504,7 @@ def update_core_file_priority(task_name, new_pri, now, week=None):
     if not core_path.exists():
         return
     lines = core_path.read_text().split("\n")
-    done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+    done_section = _done_boundary(lines, len(lines))
     all_emojis = set(PRI_EMOJI.values())
     new_emoji = PRI_EMOJI.get(new_pri)
     i = find_task_line(lines, task_name, end_idx=done_section)
@@ -1505,9 +1529,8 @@ def update_core_file_priority(task_name, new_pri, now, week=None):
 
 def apply_priority_update(task_id):
     """Cycle the priority of the task with the given stable id."""
-    try:
-        data = json.loads(JSON_FILE.read_text())
-    except Exception:
+    data = _load_state()
+    if data is None:
         return False
     now = datetime.datetime.now()
     task, _ = find_task_by_id(data, task_id)
@@ -1515,8 +1538,7 @@ def apply_priority_update(task_id):
         return False
     new_pri = PRI_CYCLE.get(task.get("pri"))
     task["pri"] = new_pri
-    data["updated"] = now.strftime("%Y-%m-%d %H:%M")
-    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _save_state(data, now)
     update_core_file_priority(task.get("task", ""), new_pri, now, week=data.get("week"))
     return True
 
@@ -1559,7 +1581,7 @@ def sync_core_file_order(data):
     if not core_path.exists():
         return
     lines = core_path.read_text().split("\n")
-    done_idx = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+    done_idx = _done_boundary(lines, len(lines))
 
     # Ordered task names from JSON
     ordered_names = [
@@ -1594,9 +1616,8 @@ def sync_core_file_order(data):
 
 def apply_sort():
     """Sort by priority; redistribute tasks between High Priority and Lower Priority sections."""
-    try:
-        data = json.loads(JSON_FILE.read_text())
-    except Exception:
+    data = _load_state()
+    if data is None:
         return False
     pri_order = {"P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5, None: 6}
     sections = data.get("sections", [])
@@ -1618,17 +1639,15 @@ def apply_sort():
                                  key=lambda t: pri_order.get(t.get("pri"), 6))
 
     renumber_tasks(data)
-    data["updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _save_state(data)
     sync_core_file_order(data)
     return True
 
 
 def apply_uncomplete(num):
     """Move a completed task back to active. Reads priority from core file to pick section."""
-    try:
-        data = json.loads(JSON_FILE.read_text())
-    except Exception:
+    data = _load_state()
+    if data is None:
         return False
 
     now = datetime.datetime.now()
@@ -1645,7 +1664,7 @@ def apply_uncomplete(num):
     pri = None
     if core_path.exists():
         lines = core_path.read_text().split("\n")
-        done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+        done_section = _done_boundary(lines, len(lines))
         emoji_to_pri = {v: k for k, v in PRI_EMOJI.items()}
         # Search the Done area only, then translate back to a global index.
         rel_idx = find_task_line(lines[done_section:], task_name, marker="[x]")
@@ -1666,7 +1685,7 @@ def apply_uncomplete(num):
             # Remove empty heading if no tasks remain under it
             # (leave cleanup to next tk run)
             # Insert restored line at top of active area (before ## Done)
-            done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+            done_section = _done_boundary(lines, len(lines))
             lines.insert(done_section, restored)
             core_path.write_text("\n".join(lines))
 
@@ -1693,16 +1712,14 @@ def apply_uncomplete(num):
         target["tasks"].append(new_task)
 
     renumber_tasks(data)
-    data["updated"] = now.strftime("%Y-%m-%d %H:%M")
-    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _save_state(data, now)
     return True
 
 
 def apply_status_change(num, force_status=None):
     """Update the status of task `num`. Cycles if force_status is None, else sets explicitly."""
-    try:
-        data = json.loads(JSON_FILE.read_text())
-    except Exception:
+    data = _load_state()
+    if data is None:
         return False
 
     now = datetime.datetime.now()
@@ -1732,16 +1749,14 @@ def apply_status_change(num, force_status=None):
     else:
         task["status"] = new_status
 
-    data["updated"] = now.strftime("%Y-%m-%d %H:%M")
-    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _save_state(data, now)
     update_core_file(task_name, new_status, now, week=data.get("week"))
     return True
 
 def apply_cancel(task_id):
     """Cancel a task: remove from active JSON, mark [/] in core file, move to ## Cancelled."""
-    try:
-        data = json.loads(JSON_FILE.read_text())
-    except Exception:
+    data = _load_state()
+    if data is None:
         return False
 
     task, source_section = find_task_by_id(data, task_id)
@@ -1761,7 +1776,7 @@ def apply_cancel(task_id):
     core_path = current_core_path(data.get("week"))
     if core_path.exists():
         lines = core_path.read_text().split("\n")
-        done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+        done_section = _done_boundary(lines, len(lines))
         task_idx = find_task_line(lines, task_name, end_idx=done_section)
         if task_idx is not None:
             original = lines[task_idx]
@@ -1769,52 +1784,64 @@ def apply_cancel(task_id):
             if "_(cancelled:" not in updated:
                 updated += f" _(cancelled: {ts})_"
             lines.pop(task_idx)
-
-            cancelled_section = next((i for i, l in enumerate(lines) if l.strip() == "## Cancelled"), None)
-            if cancelled_section is None:
-                # Create the section after ## Done if it exists, else at end of file
-                done_idx = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), None)
-                if done_idx is None:
-                    lines += ["", "## Cancelled", "", f"### {today_str}", updated]
-                else:
-                    after_done = next(
-                        (i for i, l in enumerate(lines[done_idx + 1:], done_idx + 1) if l.startswith("## ")),
-                        len(lines),
-                    )
-                    block = ["", "## Cancelled", "", f"### {today_str}", updated]
-                    for j, item in enumerate(block):
-                        lines.insert(after_done + j, item)
-            else:
-                ins = cancelled_section + 1
-                if ins < len(lines) and lines[ins] == "":
-                    ins += 1
-                if ins < len(lines) and lines[ins] == f"### {today_str}":
-                    lines.insert(ins + 1, updated)
-                else:
-                    lines.insert(cancelled_section + 1, updated)
-                    lines.insert(cancelled_section + 1, f"### {today_str}")
-                    lines.insert(cancelled_section + 1, "")
+            _insert_under_dated_section(lines, "Cancelled", updated, today_str, anchor_after="Done")
 
         core_path.write_text("\n".join(lines))
 
-    # If the cancelled task was in Today's Focus, snapshot the new focus list to journal
-    if src_title == "Today's Focus":
-        focus = next((s for s in data.get("sections", []) if s.get("title") == "Today's Focus"), None)
-        if focus is not None:
-            set_today_focus([t.get("task", "") for t in focus.get("tasks", [])])
+    _snapshot_focus_if_touched(data, src_title)
 
     renumber_tasks(data)
-    data["updated"] = ts
-    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _save_state(data, now)
     return True
+
+
+def _load_state():
+    """Read tasks-live.json. Returns the dict, or None if unreadable."""
+    try:
+        return json.loads(JSON_FILE.read_text())
+    except Exception:
+        return None
+
+
+def _save_state(data, now=None):
+    """Stamp `updated` and persist `data` to tasks-live.json."""
+    data["updated"] = (now or datetime.datetime.now()).strftime("%Y-%m-%d %H:%M")
+    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def _apply_cross_section_effects(src_task, src_title, tgt_title, now, week=None):
+    """Priority bumps + Monitoring status flips when a task crosses sections.
+    Mutates `src_task` in place and updates the core file."""
+    if tgt_title == "High Priority" and src_task.get("pri") not in ("P1", "P2"):
+        src_task["pri"] = "P2"
+        update_core_file_priority(src_task.get("task", ""), "P2", now, week=week)
+    elif tgt_title == "Lower Priority" and src_task.get("pri") in ("P1", "P2"):
+        src_task["pri"] = "P3"
+        update_core_file_priority(src_task.get("task", ""), "P3", now, week=week)
+
+    if tgt_title == "Monitoring" and src_task.get("status") != "waiting":
+        src_task["status"] = "waiting"
+        update_core_file(src_task.get("task", ""), "waiting", now, week=week)
+    elif src_title == "Monitoring" and tgt_title != "Monitoring":
+        src_task["status"] = "open"
+        update_core_file(src_task.get("task", ""), "open", now, week=week)
+
+
+def _snapshot_focus_if_touched(data, *titles):
+    """If any of `titles` is 'Today's Focus', persist the current focus list
+    to the journal so changes survive `tk` rebuilds."""
+    if "Today's Focus" not in titles:
+        return
+    focus = next((s for s in data.get("sections", []) if s.get("title") == "Today's Focus"), None)
+    if focus is not None:
+        set_today_focus([t.get("task", "") for t in focus.get("tasks", [])])
 
 
 def apply_move_section(task_id, target_title):
     """Move a task by id to a named section (appending at end), with the same
     side effects as drag-and-drop: priority bumps, status flips, focus journal updates."""
-    try:
-        data = json.loads(JSON_FILE.read_text())
-    except Exception:
+    data = _load_state()
+    if data is None:
         return False
 
     src_task, src_section = find_task_by_id(data, task_id)
@@ -1832,44 +1859,21 @@ def apply_move_section(task_id, target_title):
     tgt_title = tgt_section.get("title")
     now = datetime.datetime.now()
 
-    # Remove from source
     src_section["tasks"] = [t for t in src_section["tasks"] if t.get("id") != task_id]
-
-    # Priority bump for High/Lower Priority crossings
-    if tgt_title == "High Priority" and src_task.get("pri") not in ("P1", "P2"):
-        src_task["pri"] = "P2"
-        update_core_file_priority(src_task.get("task", ""), "P2", now, week=data.get("week"))
-    elif tgt_title == "Lower Priority" and src_task.get("pri") in ("P1", "P2"):
-        src_task["pri"] = "P3"
-        update_core_file_priority(src_task.get("task", ""), "P3", now, week=data.get("week"))
-
-    # Monitoring entry/exit flips state marker
-    if tgt_title == "Monitoring" and src_task.get("status") != "waiting":
-        src_task["status"] = "waiting"
-        update_core_file(src_task.get("task", ""), "waiting", now, week=data.get("week"))
-    elif src_title == "Monitoring" and tgt_title != "Monitoring":
-        src_task["status"] = "open"
-        update_core_file(src_task.get("task", ""), "open", now, week=data.get("week"))
+    _apply_cross_section_effects(src_task, src_title, tgt_title, now, week=data.get("week"))
 
     tgt_section["tasks"].append(src_task)
     renumber_tasks(data)
-    data["updated"] = now.strftime("%Y-%m-%d %H:%M")
-    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _save_state(data, now)
     sync_core_file_order(data)
-
-    if "Today's Focus" in (src_title, tgt_title):
-        focus = next((s for s in data.get("sections", []) if s.get("title") == "Today's Focus"), None)
-        if focus is not None:
-            set_today_focus([t.get("task", "") for t in focus.get("tasks", [])])
-
+    _snapshot_focus_if_touched(data, src_title, tgt_title)
     return True
 
 
 def apply_reorder(from_num, to_num, before=True):
     """Move task (by stable id) to before/after another task. Updates priority when crossing sections."""
-    try:
-        data = json.loads(JSON_FILE.read_text())
-    except Exception:
+    data = _load_state()
+    if data is None:
         return False
 
     src_task, src_section = find_task_by_id(data, from_num)
@@ -1889,40 +1893,18 @@ def apply_reorder(from_num, to_num, before=True):
         tgt_idx = next((i for i, t in enumerate(tgt_section["tasks"]) if t.get("id") == to_num),
                        len(tgt_section["tasks"]))
 
-    # Cross-section side effects
     now = datetime.datetime.now()
     src_title = src_section.get("title")
     tgt_title = tgt_section.get("title")
     if src_section is not tgt_section:
-        # Priority bumps for High/Lower Priority moves
-        if tgt_title == "High Priority" and src_task.get("pri") not in ("P1", "P2"):
-            src_task["pri"] = "P2"
-            update_core_file_priority(src_task.get("task", ""), "P2", now, week=data.get("week"))
-        elif tgt_title == "Lower Priority" and src_task.get("pri") in ("P1", "P2"):
-            src_task["pri"] = "P3"
-            update_core_file_priority(src_task.get("task", ""), "P3", now, week=data.get("week"))
-
-        # Monitoring entry/exit flips the [~] / [ ] marker
-        if tgt_title == "Monitoring" and src_task.get("status") != "waiting":
-            src_task["status"] = "waiting"
-            update_core_file(src_task.get("task", ""), "waiting", now, week=data.get("week"))
-        elif src_title == "Monitoring" and tgt_title != "Monitoring":
-            src_task["status"] = "open"
-            update_core_file(src_task.get("task", ""), "open", now, week=data.get("week"))
+        _apply_cross_section_effects(src_task, src_title, tgt_title, now, week=data.get("week"))
 
     insert_pos = tgt_idx if before else tgt_idx + 1
     tgt_section["tasks"].insert(insert_pos, src_task)
     renumber_tasks(data)
-    data["updated"] = now.strftime("%Y-%m-%d %H:%M")
-    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _save_state(data, now)
     sync_core_file_order(data)
-
-    # If the drag involved Today's Focus, snapshot the new focus list to the journal.
-    # This converts auto-derived focus to explicit so the change survives `tk` rebuilds.
-    if "Today's Focus" in (src_title, tgt_title):
-        focus = next((s for s in data.get("sections", []) if s.get("title") == "Today's Focus"), None)
-        if focus is not None:
-            set_today_focus([t.get("task", "") for t in focus.get("tasks", [])])
+    _snapshot_focus_if_touched(data, src_title, tgt_title)
     return True
 
 
@@ -1943,16 +1925,15 @@ def add_to_core_file(name, pri, due, why, links, week=None):
         task_line += f" ({link_strs})"
     if why and why not in ("—", "\u2014"):
         task_line += f" _(why: {why})_"
-    done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
+    done_section = _done_boundary(lines, len(lines))
     lines.insert(done_section, task_line)
     core_path.write_text("\n".join(lines))
 
 
 def apply_add(task_data):
     """Add a new task to JSON and core file."""
-    try:
-        data = json.loads(JSON_FILE.read_text())
-    except Exception:
+    data = _load_state()
+    if data is None:
         return False
     name = (task_data.get("task") or "").strip()
     if not name:
@@ -1983,8 +1964,7 @@ def apply_add(task_data):
     }
     target["tasks"].append(new_task)
     renumber_tasks(data)
-    data["updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _save_state(data)
     add_to_core_file(name, pri, due, why, links, week=data.get("week"))
     return True
 
