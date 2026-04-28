@@ -6,6 +6,8 @@ someday.md
 waiting.md
 tasks-live.json
 tasks-live.md
+serve-tasks-requests.log
+.claude/
 
 # Python
 __pycache__/
