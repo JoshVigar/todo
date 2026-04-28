@@ -77,6 +77,17 @@ PRI_CSS   = {"P1": "p1",    "P2": "p2",    "P3": "p3",    "P4": "p4",    "P5": "
 PRI_EMOJI = {"P1": "🔴",    "P2": "🟠",    "P3": "🟡",    "P4": "🔵",    "P5": "⏸️"}
 PRI_CYCLE = {"P1": "P2", "P2": "P3", "P3": "P4", "P4": "P5", "P5": "P1", None: "P3"}
 
+SEC_FOCUS = "Today's Focus"
+SEC_HIGH  = "High Priority"
+SEC_LOW   = "Lower Priority"
+SEC_MON   = "Monitoring"
+
+
+def target_section_for_pri(pri):
+    """Return the canonical section title a task with this priority belongs in."""
+    return SEC_HIGH if pri in ("P1", "P2") else SEC_LOW
+
+
 SECTION_COLORS = {
     "monitoring":      "#e3b341",
     "high priority":   "#f0883e",
@@ -532,7 +543,6 @@ document.addEventListener('click', function(e) {
       badge.dataset.status = next;
       badge.textContent = STATUS_LABEL[next] || next;
       badge.className = 'badge status-badge ' + (STATUS_CLS[next] || 'b-open');
-      badge.dataset.id = badge.dataset.id; // keep
       fetch('/update', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -797,7 +807,16 @@ document.addEventListener('keydown', function(e) {
 # ---------------------------------------------------------------------------
 
 def h(text):
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (str(text)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+def _section_header(label, color):
+    """Standard section header bar with the section's accent colour."""
+    return f'<div class="section-header" style="border-left-color:{color}">{h(label)}</div>\n'
 
 def format_age(from_week, current_week, added=None):
     """Show task age. Uses 'added' date (days) if available, falls back to week diff."""
@@ -819,7 +838,7 @@ def format_age(from_week, current_week, added=None):
             return f'<span style="color:{color}">{label}</span>'
         except Exception:
             pass
-    if not from_week or from_week in ("—", "—"):
+    if not from_week or from_week == "—":
         return '<span style="color:#484f58">—</span>'
     try:
         weeks = int(current_week.lstrip("W")) - int(from_week.lstrip("W"))
@@ -856,7 +875,7 @@ def render_pri(pri, task_id=None):
 
 def is_due_soon(due_str):
     """True if due_str is HH:MM and within the next 2 hours."""
-    if not due_str or due_str in ("—", "today") or "⚠️" in due_str or "-" in due_str:
+    if not due_str or not re.fullmatch(r"\d{1,2}:\d{2}", due_str):
         return False
     try:
         hh, mm = map(int, due_str.split(":"))
@@ -897,7 +916,6 @@ def render_core_section(title, tasks, week):
         return ""
     color = section_color(title)
     label = title
-    draggable = True
 
     # Hide Why column when no task has a meaningful reason
     show_why = any((t.get("why") or "—").strip() not in ("", "—") for t in tasks)
@@ -908,7 +926,7 @@ def render_core_section(title, tasks, week):
         task_id = t.get("id", t.get("num", ""))
         due = t.get("due") or "—"
         due_html = f'<span class="due">{h(due)}</span>' if is_due_soon(due) else h(due)
-        drag_attrs = f' draggable="true" data-id="{task_id}"' if draggable else ""
+        drag_attrs = f' draggable="true" data-id="{task_id}"'
         cells = [
             f'<td class="num" data-id="{task_id}">{task_id}</td>',
             f'<td>{render_pri(t.get("pri"), task_id)}</td>',
@@ -933,8 +951,8 @@ def render_core_section(title, tasks, week):
     if show_why:
         headers.append('<th style="width:14%">Why</th>')
     return (
-        f'<div class="section-header" style="border-left-color:{color}">{h(label)}</div>\n'
-        f'<table><thead><tr>{"".join(headers)}</tr></thead><tbody>\n'
+        _section_header(label, color)
+        + f'<table><thead><tr>{"".join(headers)}</tr></thead><tbody>\n'
         + "\n".join(rows)
         + "\n</tbody></table>\n"
     )
@@ -981,8 +999,8 @@ def render_compact_section(title, tasks, week):
             f'<div class="cmp-detail" data-id="{task_id}">{"".join(detail_parts)}</div>'
         )
     return (
-        f'<div class="section-header" style="border-left-color:{color}">{h(label)}</div>\n'
-        f'<div class="cmp-section">{"".join(rows)}</div>\n'
+        _section_header(label, color)
+        + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 
 
@@ -1052,13 +1070,13 @@ def render_goalie_section(title, tasks):
             f'</tr>'
         )
     return (
-        f'<div class="section-header" style="border-left-color:{color}">{h(title)}</div>\n'
-        f'<table><thead><tr>'
-        f'<th style="width:2%">#</th>'
-        f'<th>Task</th>'
-        f'<th style="width:9%">Link</th>'
-        f'<th style="width:7%">Status</th>'
-        f'</tr></thead><tbody>\n'
+        _section_header(title, color)
+        + '<table><thead><tr>'
+        '<th style="width:2%">#</th>'
+        '<th>Task</th>'
+        '<th style="width:9%">Link</th>'
+        '<th style="width:7%">Status</th>'
+        '</tr></thead><tbody>\n'
         + "\n".join(rows)
         + "\n</tbody></table>\n"
     )
@@ -1079,13 +1097,13 @@ def render_completed(tasks):
             f'</tr>'
         )
     return (
-        f'<div class="section-header" style="border-left-color:{color}">Completed today</div>\n'
-        f'<table><thead><tr>'
-        f'<th style="width:2%">#</th>'
-        f'<th>Task</th>'
-        f'<th style="width:9%">Link</th>'
-        f'<th style="width:5%">Time</th>'
-        f'</tr></thead><tbody>\n'
+        _section_header("Completed today", color)
+        + '<table><thead><tr>'
+        '<th style="width:2%">#</th>'
+        '<th>Task</th>'
+        '<th style="width:9%">Link</th>'
+        '<th style="width:5%">Time</th>'
+        '</tr></thead><tbody>\n'
         + "\n".join(rows)
         + "\n</tbody></table>\n"
     )
@@ -1168,7 +1186,7 @@ def render_workdays_sparkline():
             f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_w:.2f}" '
             f'height="{max(h, 1.5):.2f}" fill="{fill}" rx="1.5" ry="1.5"/>'
         )
-        points.append(f"{cx:.2f},{y:.2f}")
+        points.append((cx, y))
         # Full-column transparent hover zone gives a generous hit target,
         # especially for empty days where the bar is just 1.5px tall.
         date_str = f"{d.strftime('%a %b')} {ordinal(d.day)}"
@@ -1179,15 +1197,15 @@ def render_workdays_sparkline():
         )
 
     trendline = (
-        f'<polyline points="{" ".join(points)}" fill="none" '
+        f'<polyline points="{" ".join(f"{x:.2f},{y:.2f}" for x, y in points)}" fill="none" '
         f'stroke="#58a6ff" stroke-width="1.5" stroke-linecap="round" '
         f'stroke-linejoin="round" opacity="0.85" '
         f'vector-effect="non-scaling-stroke"/>'
     )
     point_dots = "".join(
-        f'<circle cx="{p.split(",")[0]}" cy="{p.split(",")[1]}" r="1.5" '
+        f'<circle cx="{x:.2f}" cy="{y:.2f}" r="1.5" '
         f'fill="#58a6ff" opacity="0.9"/>'
-        for p in points
+        for x, y in points
     )
 
     svg = (
@@ -1242,8 +1260,8 @@ def render_compact_completed(tasks):
             f'</div>'
         )
     return (
-        f'<div class="section-header" style="border-left-color:{color}">Completed today</div>\n'
-        f'<div class="cmp-section">{"".join(rows)}</div>\n'
+        _section_header("Completed today", color)
+        + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 
 VIEWS = ["dashboard", "classic"]
@@ -1263,9 +1281,9 @@ def _build_dashboard_body(data, week):
             parts.append(card(render_goalie_section(section.get("title", ""), section.get("tasks", []))))
 
     # Two-column grid: left = active (full detail), right = monitoring + lower (compact)
-    LEFT  = ("Today's Focus", "High Priority")
-    RIGHT = ("Monitoring", "Lower Priority")
-    CARD_VARIANTS = {"Today's Focus": "focus", "High Priority": "high-priority"}
+    LEFT  = (SEC_FOCUS, SEC_HIGH)
+    RIGHT = (SEC_MON, SEC_LOW)
+    CARD_VARIANTS = {SEC_FOCUS: "focus", SEC_HIGH: "high-priority"}
     sections_by_title = {s.get("title"): s for s in data.get("sections", []) if s.get("type") != "goalie"}
 
     left_html = "".join(
@@ -1308,7 +1326,7 @@ def _build_classic_body(data, week):
         cls = "task-card" + (f" {variant}" if variant else "")
         return f'<div class="{cls}">{html}</div>'
 
-    CARD_VARIANTS = {"Today's Focus": "focus", "High Priority": "high-priority"}
+    CARD_VARIANTS = {SEC_FOCUS: "focus", SEC_HIGH: "high-priority"}
     for section in data.get("sections", []):
         stype = section.get("type", "core")
         title = section.get("title", "")
@@ -1391,9 +1409,9 @@ def build_page(data, view="dashboard"):
         f'<div id="ctx-menu">'
         f'<div class="ctx-header">Move to</div>'
         f'<div class="ctx-item" data-section="Today\u0027s Focus">Today\u0027s Focus</div>'
-        f'<div class="ctx-item" data-section="Monitoring">Monitoring</div>'
-        f'<div class="ctx-item" data-section="High Priority">High Priority</div>'
-        f'<div class="ctx-item" data-section="Lower Priority">Lower Priority</div>'
+        f'<div class="ctx-item" data-section="{SEC_MON}">{SEC_MON}</div>'
+        f'<div class="ctx-item" data-section="{SEC_HIGH}">{SEC_HIGH}</div>'
+        f'<div class="ctx-item" data-section="{SEC_LOW}">{SEC_LOW}</div>'
         f'<div class="ctx-divider"></div>'
         f'<div class="ctx-item danger" data-action="cancel">Cancel task</div>'
         f'</div>'
@@ -1622,8 +1640,8 @@ def apply_sort():
     pri_order = {"P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5, None: 6}
     sections = data.get("sections", [])
 
-    high  = next((s for s in sections if s.get("title") == "High Priority"),  None)
-    lower = next((s for s in sections if s.get("title") == "Lower Priority"), None)
+    high  = next((s for s in sections if s.get("title") == SEC_HIGH),  None)
+    lower = next((s for s in sections if s.get("title") == SEC_LOW), None)
 
     if high and lower:
         pool = high.get("tasks", []) + lower.get("tasks", [])
@@ -1634,7 +1652,7 @@ def apply_sort():
 
     # Sort all other sections internally
     for s in sections:
-        if s.get("title") not in ("High Priority", "Lower Priority"):
+        if s.get("title") not in (SEC_HIGH, SEC_LOW):
             s["tasks"] = sorted(s.get("tasks", []),
                                  key=lambda t: pri_order.get(t.get("pri"), 6))
 
@@ -1704,7 +1722,7 @@ def apply_uncomplete(num):
         "status": "open",
         "why": "—",
     }
-    target_title = "High Priority" if pri in ("P1", "P2") else "Lower Priority"
+    target_title = target_section_for_pri(pri)
     target = next((s for s in data.get("sections", []) if s.get("title") == target_title), None)
     if target is None:
         target = next((s for s in data.get("sections", []) if s.get("type", "core") == "core"), None)
@@ -1812,17 +1830,17 @@ def _save_state(data, now=None):
 def _apply_cross_section_effects(src_task, src_title, tgt_title, now, week=None):
     """Priority bumps + Monitoring status flips when a task crosses sections.
     Mutates `src_task` in place and updates the core file."""
-    if tgt_title == "High Priority" and src_task.get("pri") not in ("P1", "P2"):
+    if tgt_title == SEC_HIGH and src_task.get("pri") not in ("P1", "P2"):
         src_task["pri"] = "P2"
         update_core_file_priority(src_task.get("task", ""), "P2", now, week=week)
-    elif tgt_title == "Lower Priority" and src_task.get("pri") in ("P1", "P2"):
+    elif tgt_title == SEC_LOW and src_task.get("pri") in ("P1", "P2"):
         src_task["pri"] = "P3"
         update_core_file_priority(src_task.get("task", ""), "P3", now, week=week)
 
-    if tgt_title == "Monitoring" and src_task.get("status") != "waiting":
+    if tgt_title == SEC_MON and src_task.get("status") != "waiting":
         src_task["status"] = "waiting"
         update_core_file(src_task.get("task", ""), "waiting", now, week=week)
-    elif src_title == "Monitoring" and tgt_title != "Monitoring":
+    elif src_title == SEC_MON and tgt_title != SEC_MON:
         src_task["status"] = "open"
         update_core_file(src_task.get("task", ""), "open", now, week=week)
 
@@ -1830,9 +1848,9 @@ def _apply_cross_section_effects(src_task, src_title, tgt_title, now, week=None)
 def _snapshot_focus_if_touched(data, *titles):
     """If any of `titles` is 'Today's Focus', persist the current focus list
     to the journal so changes survive `tk` rebuilds."""
-    if "Today's Focus" not in titles:
+    if SEC_FOCUS not in titles:
         return
-    focus = next((s for s in data.get("sections", []) if s.get("title") == "Today's Focus"), None)
+    focus = next((s for s in data.get("sections", []) if s.get("title") == SEC_FOCUS), None)
     if focus is not None:
         set_today_focus([t.get("task", "") for t in focus.get("tasks", [])])
 
@@ -1945,7 +1963,7 @@ def apply_add(task_data):
     link_url = (task_data.get("link_url") or "").strip()
     links = [{"label": link_label, "url": link_url}] if link_label and link_url else []
 
-    target_title = "High Priority" if pri in ("P1", "P2") else "Lower Priority"
+    target_title = target_section_for_pri(pri)
     target = next((s for s in data.get("sections", []) if s.get("title") == target_title), None)
     if target is None:
         return False
@@ -2034,32 +2052,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(page.encode())
 
+    _ROUTES = {
+        "/update":       lambda b: apply_status_change(b.get("id")),
+        "/complete":     lambda b: apply_status_change(b.get("id"), force_status="done"),
+        "/update-pri":   lambda b: apply_priority_update(b.get("id")),
+        "/uncomplete":   lambda b: apply_uncomplete(b.get("id")),
+        "/sort":         lambda b: apply_sort(),
+        "/reorder":      lambda b: apply_reorder(b.get("from"), b.get("to"), b.get("before", True)),
+        "/move-section": lambda b: apply_move_section(b.get("id"), b.get("section")),
+        "/cancel":       lambda b: apply_cancel(b.get("id")),
+        "/add":          lambda b: apply_add(b),
+    }
+
     def do_POST(self):
+        handler = self._ROUTES.get(self.path)
+        if handler is None:
+            self.send_response(404)
+            self.end_headers()
+            return
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length)) if length else {}
         with _state_lock:
-            if self.path == "/update":
-                ok = apply_status_change(body.get("id"))
-            elif self.path == "/complete":
-                ok = apply_status_change(body.get("id"), force_status="done")
-            elif self.path == "/update-pri":
-                ok = apply_priority_update(body.get("id"))
-            elif self.path == "/uncomplete":
-                ok = apply_uncomplete(body.get("id"))
-            elif self.path == "/sort":
-                ok = apply_sort()
-            elif self.path == "/reorder":
-                ok = apply_reorder(body.get("from"), body.get("to"), body.get("before", True))
-            elif self.path == "/move-section":
-                ok = apply_move_section(body.get("id"), body.get("section"))
-            elif self.path == "/cancel":
-                ok = apply_cancel(body.get("id"))
-            elif self.path == "/add":
-                ok = apply_add(body)
-            else:
-                self.send_response(404)
-                self.end_headers()
-                return
+            ok = handler(body)
         self.send_response(200 if ok else 400)
         self.end_headers()
 
