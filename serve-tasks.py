@@ -111,6 +111,45 @@ SECTION_COLORS = {
 # read-mutate-write of tasks-live.json across handlers and clobbers writes.
 _state_lock = threading.Lock()
 
+# Notify SSE clients whenever the rendered state could have changed.
+# `_state_version` increments on every observed mtime change of the JSON,
+# this script, or the current-week core file.
+_state_cond = threading.Condition()
+_state_version = 0
+
+
+def _state_signature():
+    """Combined mtime tuple — None if any required file is missing."""
+    try:
+        json_m = os.path.getmtime(JSON_FILE)
+        src_m  = os.path.getmtime(os.path.abspath(__file__))
+    except OSError:
+        return None
+    try:
+        core_m = os.path.getmtime(current_core_path())
+    except OSError:
+        core_m = 0
+    return (json_m, src_m, core_m)
+
+
+def _watch_state():
+    """Bump `_state_version` and notify when mtimes change. ~50ms poll → ~50ms
+    end-to-end latency from a write to the browser DOM update via SSE."""
+    global _state_version
+    last = _state_signature()
+    while True:
+        time.sleep(0.05)
+        sig = _state_signature()
+        if sig is None or sig == last:
+            continue
+        last = sig
+        with _state_cond:
+            _state_version += 1
+            _state_cond.notify_all()
+
+
+threading.Thread(target=_watch_state, daemon=True).start()
+
 _TASK_NAME_BOUNDARY = re.compile(r"\s+(?:—|\(|_\()")
 
 def _extract_task_name(line):
@@ -741,7 +780,20 @@ function _refreshTasks() {
     }
   }).catch(function(){});
 }
-setInterval(_refreshTasks, 2000);
+// Server-Sent Events: server pushes a `data:` line whenever any backing
+// file mtime changes (~50ms latency). Polling stays as a fallback in case
+// the SSE connection drops, but at 30s instead of 2s.
+var _es = null;
+function _connectSSE() {
+  try {
+    if (_es) _es.close();
+    _es = new EventSource('/events');
+    _es.onmessage = function() { _refreshTasks(); };
+    // EventSource auto-reconnects on error; nothing to do.
+  } catch (e) {}
+}
+_connectSSE();
+setInterval(_refreshTasks, 30000);
 // Refresh immediately on regaining focus so you see fresh data as soon as you switch back.
 window.addEventListener('focus', _refreshTasks);
 
@@ -2016,6 +2068,9 @@ def apply_add(task_data):
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         t0 = time.perf_counter()
+        if self.path == "/events":
+            self._handle_sse()
+            return
         if self.path.startswith("/open"):
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             url = params.get("url", [""])[0]
@@ -2117,6 +2172,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
         _log_request(
             f"{ts}  POST {self.path:25s}  ms={ms:<4d} status={status}  {id_str}".rstrip()
         )
+
+    def _handle_sse(self):
+        """Long-lived Server-Sent Events stream. Pushes one `data: <version>`
+        line each time `_state_version` changes; sends a `:keepalive` comment
+        every 30s so intermediates don't close idle connections."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        try:
+            with _state_cond:
+                last_seen = _state_version
+            self.wfile.write(f"data: {last_seen}\n\n".encode())
+            self.wfile.flush()
+            while True:
+                with _state_cond:
+                    _state_cond.wait_for(
+                        lambda: _state_version != last_seen,
+                        timeout=30,
+                    )
+                    cur = _state_version
+                if cur != last_seen:
+                    last_seen = cur
+                    msg = f"data: {cur}\n\n"
+                else:
+                    msg = ": keepalive\n\n"
+                self.wfile.write(msg.encode())
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def log_message(self, *_):
         pass
