@@ -566,7 +566,7 @@ document.addEventListener('click', function(e) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(done_td.dataset.id)})
     }).then(function(r) {
-      if (r.ok) _refreshTasks();
+      if (r.ok) _refreshTasks(true);
       else if (row) row.style.opacity = '';
     });
     return;
@@ -586,7 +586,7 @@ document.addEventListener('click', function(e) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(num_td.dataset.id)})
     }).then(function(r) {
-      if (r.ok) _refreshTasks();
+      if (r.ok) _refreshTasks(true);
       else if (row) row.style.opacity = '';
     });
     return;
@@ -606,7 +606,7 @@ document.addEventListener('click', function(e) {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({id: parseInt(badge.dataset.id)})
-      });
+      }).then(function(r) { if (!r.ok) _refreshTasks(true); });
     }
     return;
   }
@@ -624,7 +624,7 @@ document.addEventListener('click', function(e) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(pri.dataset.id)})
-    });
+    }).then(function(r) { if (!r.ok) _refreshTasks(true); });
     return;
   }
 
@@ -652,7 +652,8 @@ document.addEventListener('click', function(e) {
 
 // Sort button
 document.getElementById('sort-btn').addEventListener('click', function() {
-  fetch('/sort', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(_refreshTasks);
+  fetch('/sort', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
+    .then(function(r) { if (r.ok) _refreshTasks(true); });
 });
 
 // Add button + modal
@@ -687,6 +688,7 @@ document.getElementById('modal-save').addEventListener('click', function() {
         closeModal();
         ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){document.getElementById(id).value='';});
         document.getElementById('m-pri').value = 'P2';
+        _refreshTasks(true);
       }
     });
 });
@@ -733,7 +735,7 @@ document.addEventListener('drop', function(e) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({from: _dragNum, to: toNum, before: before})
-  }).then(_refreshTasks);
+  }).then(function(r) { if (r.ok) _refreshTasks(true); });
 });
 
 // View persistence — remember the user's chosen view across sessions.
@@ -751,10 +753,12 @@ document.addEventListener('drop', function(e) {
 })();
 
 // Scroll-preserving auto-refresh (updates both content and styles).
-// Always fires for SSE pushes and click-driven refreshes; the timed
-// polling backup uses `_pollIfFocused` which adds the focus guard.
-function _refreshTasks() {
+// `force=true` bypasses the focus guard for click-driven refreshes (the
+// user just clicked, they want immediate feedback). SSE / poll / focus
+// listeners pass nothing and respect focus.
+function _refreshTasks(force) {
   if (_dragPaused) return;
+  if (!force && !document.hasFocus()) return;
   var sy = window.scrollY;
   // Preserve which compact-row detail panels are currently expanded across the swap
   var openIds = Array.prototype.map.call(
@@ -803,11 +807,9 @@ function _connectSSE() {
   } catch (e) {}
 }
 _connectSSE();
-function _pollIfFocused() {
-  if (document.hasFocus()) _refreshTasks();
-}
-setInterval(_pollIfFocused, 30000);
+setInterval(_refreshTasks, 30000);
 // Refresh immediately on regaining focus so you see fresh data as soon as you switch back.
+// `_refreshTasks` itself drops the call when the tab isn't focused.
 window.addEventListener('focus', _refreshTasks);
 
 // Right-click context menu — move tasks between sections without dragging
@@ -844,7 +846,7 @@ document.addEventListener('click', function(e) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
-    }).then(function(r) { if (r.ok) _refreshTasks(); });
+    }).then(function(r) { if (r.ok) _refreshTasks(true); });
     document.getElementById('ctx-menu').classList.remove('open');
     _ctxTaskId = null;
     return;

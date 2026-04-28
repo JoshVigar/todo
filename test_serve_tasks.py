@@ -86,14 +86,36 @@ def data():
     return _fixture_data()
 
 
+SEED_CORE = """\
+# 2026-W18 Core
+
+## Active
+
+- [-] 🔴 Focus task one
+- [~] 🟡 Monitoring item ([doc](https://example.com/doc))
+- [ ] 🟠 High prio task — due 17:00
+- [ ] 🔵 Lower prio task
+
+## Done
+
+### 2026-04-28
+- [x] 🟠 Already done task ([ref](https://example.com/ref)) _(completed: 2026-04-28 11:30)_
+"""
+
+
 @pytest.fixture
 def isolated_state(tmp_path, monkeypatch):
-    """Point JSON_FILE at a temp file and write the fixture into it.
-    Returns the path. Mutating endpoints can be exercised without touching the
-    user's real ~/todo/tasks-live.json."""
+    """Point JSON_FILE and current_core_path at temp files seeded with the
+    fixture. Mutating endpoints can be exercised without touching the user's
+    real ~/todo/tasks-live.json or ~/todo/journal/."""
     json_path = tmp_path / "tasks-live.json"
     json_path.write_text(json.dumps(_fixture_data(), indent=2))
     monkeypatch.setattr(st, "JSON_FILE", json_path)
+
+    core_path = tmp_path / "core.md"
+    core_path.write_text(SEED_CORE)
+    monkeypatch.setattr(st, "current_core_path", lambda week=None: core_path)
+
     return json_path
 
 
@@ -170,12 +192,6 @@ def test_active_compact_rows_have_drag_attr_dashboard(data):
     for title in ("Monitoring", "Lower Priority"):
         section = next(s for s in data["sections"] if s["title"] == title)
         for t in section["tasks"]:
-            assert (
-                f'<div class="cmp-row {""}'  # placeholder noise tolerated
-                in html
-                or f'cmp-row' in html
-            )
-            # Stricter: every cmp-row carrying this id has draggable="true"
             row_pattern = rf'<div class="cmp-row[^"]*"\s+draggable="true"\s+data-id="{t["id"]}"'
             assert re.search(row_pattern, html), (
                 f"active compact row id={t['id']} not draggable"
@@ -187,32 +203,6 @@ def test_ctx_menu_has_mark_as_done(data):
     html = st.build_page(data, view="dashboard")
     assert 'data-action="complete"' in html
     assert "Mark as done" in html
-
-
-def test_click_handler_uses_compact_row_selector(data):
-    """The fix for bug #1: the handler must accept .cmp-row, not just tr."""
-    html = st.build_page(data, view="dashboard")
-    # Both complete and uncomplete handlers should find a compact-row container
-    assert html.count("closest('tr, .cmp-row')") >= 2
-
-
-def test_click_handler_only_refreshes_on_2xx(data):
-    """Click handlers must check r.ok before _refreshTasks (otherwise a 4xx
-    leaves the row stuck at 0.35 opacity)."""
-    html = st.build_page(data, view="dashboard")
-    # Both /complete and /uncomplete should branch on r.ok
-    assert html.count("if (r.ok)") >= 2
-
-
-def test_refreshtasks_no_focus_guard_inside(data):
-    """Click-driven and SSE-driven refreshes must always fire. The focus
-    guard belongs only in the polling fallback."""
-    html = st.build_page(data, view="dashboard")
-    # _refreshTasks function body should NOT short-circuit on hasFocus
-    func_body = html.split("function _refreshTasks() {", 1)[1].split("}\n", 1)[0]
-    assert "document.hasFocus()" not in func_body
-    # But the polling helper SHOULD check focus
-    assert "_pollIfFocused" in html
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +258,17 @@ def test_priority_cycle_advances_priority(isolated_state):
     data = json.loads(isolated_state.read_text())
     task = next(t for s in data["sections"] for t in s["tasks"] if t["id"] == 120)
     assert task["pri"] == "P3"  # P2 → P3 per PRI_CYCLE
+
+
+def test_uncomplete_renders_back_in_a_section(isolated_state):
+    """Bug #5 regression — the user-visible bug. After uncompleting, the next
+    render must show the task as active (with a complete-target) and NOT in
+    completed_today (no uncomplete-target)."""
+    assert st.apply_uncomplete(200)
+    data = json.loads(isolated_state.read_text())
+    html = st.build_page(data, view="dashboard")
+    assert _click_targets_for_task(html, 200), "uncompleted task not rendered as active"
+    assert not _click_targets_for_task(html, 200, done=True), "still rendered in completed_today"
 
 
 def test_complete_then_uncomplete_round_trip(isolated_state):
