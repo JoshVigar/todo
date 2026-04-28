@@ -1,0 +1,306 @@
+"""Smoke tests for serve-tasks.py.
+
+Goal: catch the class of bug where one render path or click-target convention
+gets out of sync with the others (the "compact-row complete is broken because
+the handler used closest('tr')" class). These are not exhaustive — they are
+trip-wires that fire when an obvious invariant gets violated.
+
+Run: SERVE_TASKS_NO_WATCH=1 python3 -m pytest test_serve_tasks.py -q
+"""
+import importlib.util
+import json
+import os
+import re
+from pathlib import Path
+
+# Suppress the daemon threads (auto-restart + SSE notifier) before import.
+os.environ.setdefault("SERVE_TASKS_NO_WATCH", "1")
+
+import pytest
+
+SCRIPT = Path(__file__).parent / "serve-tasks.py"
+spec = importlib.util.spec_from_file_location("st", SCRIPT)
+st = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(st)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+def _fixture_data():
+    """A deliberately mixed JSON: at least one task per dashboard column type
+    plus one completed entry. Exercises every render path."""
+    return {
+        "updated": "2026-04-28 12:00",
+        "week": "W18",
+        "sections": [
+            {
+                "title": "Today's Focus",
+                "type": "core",
+                "tasks": [
+                    {"id": 101, "num": 1, "pri": "P1", "task": "Focus task one",
+                     "due": "—", "from": "W18", "added": "2026-04-28",
+                     "links": [], "status": "in_progress", "why": "—"},
+                ],
+            },
+            {
+                "title": "Monitoring",
+                "type": "core",
+                "tasks": [
+                    {"id": 110, "num": 2, "pri": "P3", "task": "Monitoring item",
+                     "due": "—", "from": "W17", "added": "2026-04-21",
+                     "links": [{"label": "doc", "url": "https://example.com/doc"}],
+                     "status": "waiting", "why": "watching for X"},
+                ],
+            },
+            {
+                "title": "High Priority",
+                "type": "core",
+                "tasks": [
+                    {"id": 120, "num": 3, "pri": "P2", "task": "High prio task",
+                     "due": "17:00", "from": "W18", "added": "2026-04-28",
+                     "links": [], "status": "open", "why": "—"},
+                ],
+            },
+            {
+                "title": "Lower Priority",
+                "type": "core",
+                "tasks": [
+                    {"id": 130, "num": 4, "pri": "P4", "task": "Lower prio task",
+                     "due": "—", "from": "W18", "added": "2026-04-28",
+                     "links": [], "status": "open", "why": "—"},
+                ],
+            },
+        ],
+        "completed_today": [
+            {"id": 200, "num": 5, "task": "Already done task",
+             "links": [{"label": "ref", "url": "https://example.com/ref"}],
+             "time": "11:30", "from_section": "High Priority"},
+        ],
+    }
+
+
+@pytest.fixture
+def data():
+    return _fixture_data()
+
+
+@pytest.fixture
+def isolated_state(tmp_path, monkeypatch):
+    """Point JSON_FILE at a temp file and write the fixture into it.
+    Returns the path. Mutating endpoints can be exercised without touching the
+    user's real ~/todo/tasks-live.json."""
+    json_path = tmp_path / "tasks-live.json"
+    json_path.write_text(json.dumps(_fixture_data(), indent=2))
+    monkeypatch.setattr(st, "JSON_FILE", json_path)
+    return json_path
+
+
+# ---------------------------------------------------------------------------
+# Render-time invariants
+# ---------------------------------------------------------------------------
+
+def test_renders_dashboard(data):
+    html = st.build_page(data, view="dashboard")
+    assert "<html>" in html or "<!DOCTYPE html>" in html
+    assert len(html) > 1000
+
+
+def test_renders_classic(data):
+    html = st.build_page(data, view="classic")
+    assert "<html>" in html or "<!DOCTYPE html>" in html
+    assert len(html) > 1000
+
+
+def _click_targets_for_task(html, task_id, *, done=False):
+    """Return all click targets in `html` carrying data-id=task_id.
+    Looks for both table-style (`td.num` / `td.num-done`) and compact-style
+    (`.cmp-id` / `.cmp-id-done`) targets — any one of them is enough."""
+    if done:
+        pattern = (
+            rf'(?:class="[^"]*\b(?:num-done|cmp-id-done)\b[^"]*"\s+data-id="{task_id}"'
+            rf'|data-id="{task_id}"\s+class="[^"]*\b(?:num-done|cmp-id-done)\b[^"]*")'
+        )
+    else:
+        pattern = (
+            rf'(?:class="[^"]*\b(?:num|cmp-id)\b(?![-])[^"]*"\s+data-id="{task_id}"'
+            rf'|data-id="{task_id}"\s+class="[^"]*\b(?:num|cmp-id)\b(?![-])[^"]*")'
+        )
+    return re.findall(pattern, html)
+
+
+@pytest.mark.parametrize("view", ["dashboard", "classic"])
+def test_every_active_task_has_a_clickable_complete_target(data, view):
+    """The bug we shipped: compact rows in dashboard view used .cmp-id
+    but the click handler did closest('tr') — silent failure. This trips
+    when any active task is rendered without a working complete target."""
+    html = st.build_page(data, view=view)
+    missing = []
+    for s in data["sections"]:
+        for t in s["tasks"]:
+            if not _click_targets_for_task(html, t["id"]):
+                missing.append((s["title"], t["id"], t["task"]))
+    assert not missing, f"active tasks missing complete-click target: {missing}"
+
+
+@pytest.mark.parametrize("view", ["dashboard", "classic"])
+def test_every_completed_task_has_a_clickable_uncomplete_target(data, view):
+    html = st.build_page(data, view=view)
+    missing = []
+    for t in data["completed_today"]:
+        if not _click_targets_for_task(html, t["id"], done=True):
+            missing.append((t["id"], t["task"]))
+    assert not missing, f"completed tasks missing uncomplete target: {missing}"
+
+
+def test_completed_rows_have_detail_panel_dashboard(data):
+    """Bug #4: compact completed rows missed the cmp-detail sibling so
+    click-task-name to expand did nothing."""
+    html = st.build_page(data, view="dashboard")
+    for t in data["completed_today"]:
+        assert f'cmp-detail" data-id="{t["id"]}"' in html, (
+            f"completed task id={t['id']} missing detail panel"
+        )
+
+
+def test_active_compact_rows_have_drag_attr_dashboard(data):
+    """Drag-to-reorder needs draggable=true on every active compact row."""
+    html = st.build_page(data, view="dashboard")
+    for title in ("Monitoring", "Lower Priority"):
+        section = next(s for s in data["sections"] if s["title"] == title)
+        for t in section["tasks"]:
+            assert (
+                f'<div class="cmp-row {""}'  # placeholder noise tolerated
+                in html
+                or f'cmp-row' in html
+            )
+            # Stricter: every cmp-row carrying this id has draggable="true"
+            row_pattern = rf'<div class="cmp-row[^"]*"\s+draggable="true"\s+data-id="{t["id"]}"'
+            assert re.search(row_pattern, html), (
+                f"active compact row id={t['id']} not draggable"
+            )
+
+
+def test_ctx_menu_has_mark_as_done(data):
+    """Bug #3: the right-click menu had no /complete option."""
+    html = st.build_page(data, view="dashboard")
+    assert 'data-action="complete"' in html
+    assert "Mark as done" in html
+
+
+def test_click_handler_uses_compact_row_selector(data):
+    """The fix for bug #1: the handler must accept .cmp-row, not just tr."""
+    html = st.build_page(data, view="dashboard")
+    # Both complete and uncomplete handlers should find a compact-row container
+    assert html.count("closest('tr, .cmp-row')") >= 2
+
+
+def test_click_handler_only_refreshes_on_2xx(data):
+    """Click handlers must check r.ok before _refreshTasks (otherwise a 4xx
+    leaves the row stuck at 0.35 opacity)."""
+    html = st.build_page(data, view="dashboard")
+    # Both /complete and /uncomplete should branch on r.ok
+    assert html.count("if (r.ok)") >= 2
+
+
+def test_refreshtasks_no_focus_guard_inside(data):
+    """Click-driven and SSE-driven refreshes must always fire. The focus
+    guard belongs only in the polling fallback."""
+    html = st.build_page(data, view="dashboard")
+    # _refreshTasks function body should NOT short-circuit on hasFocus
+    func_body = html.split("function _refreshTasks() {", 1)[1].split("}\n", 1)[0]
+    assert "document.hasFocus()" not in func_body
+    # But the polling helper SHOULD check focus
+    assert "_pollIfFocused" in html
+
+
+# ---------------------------------------------------------------------------
+# State mutation invariants
+# ---------------------------------------------------------------------------
+
+def test_complete_records_from_section(isolated_state):
+    """apply_status_change(force_status='done') should record the source
+    section title so the completed-row detail panel can display it."""
+    ok = st.apply_status_change(120, force_status="done")
+    assert ok
+    data = json.loads(isolated_state.read_text())
+    entry = next(t for t in data["completed_today"] if t["id"] == 120)
+    assert entry["from_section"] == "High Priority"
+
+
+def test_uncomplete_filters_by_id_not_num(isolated_state):
+    """Regression: apply_uncomplete used to filter completed_today by `num`
+    instead of `id`; after a sort, removing the wrong row was possible.
+    Specifically, an entry whose `num` differs from its `id` must still get
+    cleanly removed when uncompleted."""
+    # Set up: completed entry where id != num (id=200, num=5 in fixture)
+    ok = st.apply_uncomplete(200)
+    assert ok
+    data = json.loads(isolated_state.read_text())
+    # Removed from completed
+    assert all(t["id"] != 200 for t in data["completed_today"])
+    # Restored to a section, with id intact
+    restored = [t for s in data["sections"] for t in s["tasks"] if t.get("id") == 200]
+    assert len(restored) == 1
+
+
+def test_uncomplete_preserves_id_field(isolated_state):
+    """The restored task must carry its stable id forward."""
+    st.apply_uncomplete(200)
+    data = json.loads(isolated_state.read_text())
+    restored = [t for s in data["sections"] for t in s["tasks"] if t.get("id") == 200]
+    assert restored
+    assert restored[0]["id"] == 200
+
+
+def test_status_cycle_updates_status(isolated_state):
+    ok = st.apply_status_change(120)  # was "open"
+    assert ok
+    data = json.loads(isolated_state.read_text())
+    task = next(t for s in data["sections"] for t in s["tasks"] if t["id"] == 120)
+    assert task["status"] == "in_progress"  # open → in_progress per STATUS_CYCLE
+
+
+def test_priority_cycle_advances_priority(isolated_state):
+    ok = st.apply_priority_update(120)  # was "P2"
+    assert ok
+    data = json.loads(isolated_state.read_text())
+    task = next(t for s in data["sections"] for t in s["tasks"] if t["id"] == 120)
+    assert task["pri"] == "P3"  # P2 → P3 per PRI_CYCLE
+
+
+def test_complete_then_uncomplete_round_trip(isolated_state):
+    """Round trip: completing then uncompleting should put the task back
+    where it can be found by id and have a sensible section."""
+    assert st.apply_status_change(120, force_status="done")
+    assert st.apply_uncomplete(120)
+    data = json.loads(isolated_state.read_text())
+    restored = [t for s in data["sections"] for t in s["tasks"] if t.get("id") == 120]
+    assert len(restored) == 1
+
+
+# ---------------------------------------------------------------------------
+# Helper-level invariants
+# ---------------------------------------------------------------------------
+
+def test_find_task_line_exact_match():
+    """find_task_line must match only the exact name slot, not a substring.
+    (The other big risk path: silent JSON↔markdown divergence.)"""
+    lines = [
+        "## Active",
+        "- [ ] 🟠 Add timeline/repo details to ELM migration tracking doc (link)",
+        "- [ ] 🟠 Add context from Friday ELM meeting to ELM migration tracking doc (link)",
+        "## Done",
+    ]
+    assert st.find_task_line(lines, "Add timeline/repo details to ELM migration tracking doc") == 1
+    assert st.find_task_line(lines, "Add context from Friday ELM meeting to ELM migration tracking doc") == 2
+    # Substring should NOT match
+    assert st.find_task_line(lines, "ELM migration tracking doc") is None
+
+
+def test_target_section_for_pri():
+    assert st.target_section_for_pri("P1") == st.SEC_HIGH
+    assert st.target_section_for_pri("P2") == st.SEC_HIGH
+    assert st.target_section_for_pri("P3") == st.SEC_LOW
+    assert st.target_section_for_pri(None) == st.SEC_LOW

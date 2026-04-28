@@ -35,7 +35,8 @@ def _watch_self():
                     pass
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
-threading.Thread(target=_watch_self, daemon=True).start()
+if not os.environ.get("SERVE_TASKS_NO_WATCH"):
+    threading.Thread(target=_watch_self, daemon=True).start()
 
 JSON_FILE = Path.home() / "todo" / "tasks-live.json"
 REQUEST_LOG = Path.home() / "todo" / "serve-tasks-requests.log"
@@ -148,7 +149,8 @@ def _watch_state():
             _state_cond.notify_all()
 
 
-threading.Thread(target=_watch_state, daemon=True).start()
+if not os.environ.get("SERVE_TASKS_NO_WATCH"):
+    threading.Thread(target=_watch_state, daemon=True).start()
 
 _TASK_NAME_BOUNDARY = re.compile(r"\s+(?:—|\(|_\()")
 
