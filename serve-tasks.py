@@ -38,7 +38,17 @@ def _watch_self():
 threading.Thread(target=_watch_self, daemon=True).start()
 
 JSON_FILE = Path.home() / "todo" / "tasks-live.json"
+REQUEST_LOG = Path.home() / "todo" / "serve-tasks-requests.log"
 PORT = 6419
+
+
+def _log_request(line):
+    """Append one line to the request log; never crash a request on log failure."""
+    try:
+        with open(REQUEST_LOG, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
 
 STATUS_MAP = {
     "waiting":          ("⏳ Waiting",             "b-waiting"),
@@ -2005,6 +2015,7 @@ def apply_add(task_data):
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        t0 = time.perf_counter()
         if self.path.startswith("/open"):
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             url = params.get("url", [""])[0]
@@ -2039,15 +2050,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             etag = None
             last_modified = None
 
-        if etag is not None:
-            inm = self.headers.get("If-None-Match")
-            if inm and inm == etag:
-                self.send_response(304)
-                self.send_header("ETag", etag)
-                if last_modified:
-                    self.send_header("Last-Modified", last_modified)
-                self.end_headers()
-                return
+        inm = self.headers.get("If-None-Match")
+        if etag is not None and inm and inm == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            if last_modified:
+                self.send_header("Last-Modified", last_modified)
+            self.end_headers()
+            # 304s are pure polling no-ops — skip logging.
+            return
 
         try:
             data = json.loads(JSON_FILE.read_text())
@@ -2063,6 +2074,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Last-Modified", last_modified)
         self.end_headers()
         self.wfile.write(page.encode())
+        ms = int((time.perf_counter() - t0) * 1000)
+        src = "poll" if inm else "nav"
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        _log_request(f"{ts}  GET  {self.path:25s}  ms={ms:<4d} status=200  {src}")
 
     _ROUTES = {
         "/update":       lambda b: apply_status_change(b.get("id")),
@@ -2077,17 +2092,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
     }
 
     def do_POST(self):
+        t0 = time.perf_counter()
         handler = self._ROUTES.get(self.path)
         if handler is None:
             self.send_response(404)
             self.end_headers()
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            _log_request(f"{ts}  POST {self.path:25s}  ms=0    status=404")
             return
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length)) if length else {}
         with _state_lock:
             ok = handler(body)
-        self.send_response(200 if ok else 400)
+        status = 200 if ok else 400
+        self.send_response(status)
         self.end_headers()
+        ms = int((time.perf_counter() - t0) * 1000)
+        # `id` is the most useful identifier for clicks; fall back to from/to for /reorder
+        id_part = body.get("id")
+        if id_part is None and "from" in body:
+            id_part = f"{body.get('from')}->{body.get('to')}"
+        id_str = f"id={id_part}" if id_part is not None else ""
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        _log_request(
+            f"{ts}  POST {self.path:25s}  ms={ms:<4d} status={status}  {id_str}".rstrip()
+        )
 
     def log_message(self, *_):
         pass
