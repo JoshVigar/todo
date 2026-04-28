@@ -692,10 +692,10 @@ document.addEventListener('drop', function(e) {
 })();
 
 // Scroll-preserving auto-refresh (updates both content and styles).
-// The interval is started on focus and stopped on blur so a backgrounded tab
-// does no work at all; `_dragPaused` suppresses ticks during drag-and-drop.
+// Only runs when the tab has focus — switching to another app or tab pauses polling.
 function _refreshTasks() {
   if (_dragPaused) return;
+  if (!document.hasFocus()) return;
   var sy = window.scrollY;
   // Preserve which compact-row detail panels are currently expanded across the swap
   var openIds = Array.prototype.map.call(
@@ -731,20 +731,9 @@ function _refreshTasks() {
     }
   }).catch(function(){});
 }
-var _refreshTimer = null;
-function _startRefresh() {
-  if (_refreshTimer !== null) return;
-  _refreshTasks();
-  _refreshTimer = setInterval(_refreshTasks, 2000);
-}
-function _stopRefresh() {
-  if (_refreshTimer === null) return;
-  clearInterval(_refreshTimer);
-  _refreshTimer = null;
-}
-if (document.hasFocus()) _startRefresh();
-window.addEventListener('focus', _startRefresh);
-window.addEventListener('blur', _stopRefresh);
+setInterval(_refreshTasks, 2000);
+// Refresh immediately on regaining focus so you see fresh data as soon as you switch back.
+window.addEventListener('focus', _refreshTasks);
 
 // Right-click context menu — move tasks between sections without dragging
 var _ctxTaskId = null;
