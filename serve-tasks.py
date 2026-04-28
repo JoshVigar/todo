@@ -1365,8 +1365,17 @@ def build_page(data, view="dashboard"):
 # Core file update
 # ---------------------------------------------------------------------------
 
-def current_core_path():
+def current_core_path(week=None):
+    """Path to the core markdown file. `week` is a string like 'W17' from the
+    JSON; if absent or unparseable, falls back to today's ISO week. This lets
+    clicks on a stale tab target the JSON's week, not today's."""
     today = datetime.date.today()
+    if week:
+        try:
+            w = int(str(week).lstrip("Ww"))
+            return Path.home() / "todo" / "journal" / f"{today.year}-W{w:02d}-core.md"
+        except (ValueError, AttributeError):
+            pass
     y, w, _ = today.isocalendar()
     return Path.home() / "todo" / "journal" / f"{y}-W{w:02d}-core.md"
 
@@ -1418,9 +1427,9 @@ def set_today_focus(task_names):
 
     journal_path.write_text("\n".join(new_lines))
 
-def update_core_file(task_name, new_status, now):
+def update_core_file(task_name, new_status, now, week=None):
     """Update the task's state marker in the core markdown file."""
-    core_path = current_core_path()
+    core_path = current_core_path(week)
     if not core_path.exists():
         return
 
@@ -1465,9 +1474,9 @@ def update_core_file(task_name, new_status, now):
 
     core_path.write_text("\n".join(lines))
 
-def update_core_file_priority(task_name, new_pri, now):
+def update_core_file_priority(task_name, new_pri, now, week=None):
     """Swap the priority emoji on the task line in the core markdown file."""
-    core_path = current_core_path()
+    core_path = current_core_path(week)
     if not core_path.exists():
         return
     lines = core_path.read_text().split("\n")
@@ -1508,7 +1517,7 @@ def apply_priority_update(task_id):
     task["pri"] = new_pri
     data["updated"] = now.strftime("%Y-%m-%d %H:%M")
     JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    update_core_file_priority(task.get("task", ""), new_pri, now)
+    update_core_file_priority(task.get("task", ""), new_pri, now, week=data.get("week"))
     return True
 
 
@@ -1546,7 +1555,7 @@ def find_task_by_id(data, task_id):
 
 def sync_core_file_order(data):
     """Reorder active task lines in the core file to match the current JSON task order."""
-    core_path = current_core_path()
+    core_path = current_core_path(data.get("week"))
     if not core_path.exists():
         return
     lines = core_path.read_text().split("\n")
@@ -1632,7 +1641,7 @@ def apply_uncomplete(num):
     task_name = task.get("task", "")
 
     # Read core file to get priority and reconstruct the active line
-    core_path = current_core_path()
+    core_path = current_core_path(data.get("week"))
     pri = None
     if core_path.exists():
         lines = core_path.read_text().split("\n")
@@ -1663,18 +1672,6 @@ def apply_uncomplete(num):
 
     # Remove from completed_today (by stable id, not num)
     data["completed_today"] = [t for t in data["completed_today"] if t.get("id") != num]
-
-    # Decrement counts
-    counts = data.get("counts", "")
-    today_str = now.strftime("%Y-%m-%d")
-    m = re.search(r"(\d+) core tasks completed this week", counts)
-    if m and int(m.group(1)) > 0:
-        n = int(m.group(1)) - 1
-        counts = re.sub(r"\d+ core tasks completed this week", f"{n} core tasks completed this week", counts)
-        counts = re.sub(rf"(\d+) on {today_str}", lambda x: str(int(x.group(1)) - 1) + f" on {today_str}", counts)
-        counts = re.sub(r"\b0 on [0-9-]+ · ", "", counts)
-        counts = re.sub(r" · 0 on [0-9-]+", "", counts)
-        data["counts"] = counts
 
     # Add back to JSON — pick section by priority. Carry the stable id forward.
     new_task = {
@@ -1732,24 +1729,12 @@ def apply_status_change(num, force_status=None):
             "links": task.get("links", []),
             "time": now.strftime("%H:%M"),
         })
-        # Update counts
-        counts = data.get("counts", "")
-        today_str = now.strftime("%Y-%m-%d")
-        m = re.search(r"(\d+) core tasks completed this week", counts)
-        if m:
-            n = int(m.group(1)) + 1
-            counts = re.sub(r"\d+ core tasks completed this week", f"{n} core tasks completed this week", counts)
-            if today_str not in counts:
-                counts = re.sub(r"\(", f"(1 on {today_str} · ", counts)
-            else:
-                counts = re.sub(rf"(\d+) on {today_str}", lambda x: f"{int(x.group(1))+1} on {today_str}", counts)
-            data["counts"] = counts
     else:
         task["status"] = new_status
 
     data["updated"] = now.strftime("%Y-%m-%d %H:%M")
     JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    update_core_file(task_name, new_status, now)
+    update_core_file(task_name, new_status, now, week=data.get("week"))
     return True
 
 def apply_cancel(task_id):
@@ -1773,7 +1758,7 @@ def apply_cancel(task_id):
     source_section["tasks"] = [t for t in source_section["tasks"] if t.get("id") != task_id]
 
     # Update core file: change marker to [/], append _(cancelled: ts)_, move to ## Cancelled
-    core_path = current_core_path()
+    core_path = current_core_path(data.get("week"))
     if core_path.exists():
         lines = core_path.read_text().split("\n")
         done_section = next((i for i, l in enumerate(lines) if l.strip() == "## Done"), len(lines))
@@ -1853,18 +1838,18 @@ def apply_move_section(task_id, target_title):
     # Priority bump for High/Lower Priority crossings
     if tgt_title == "High Priority" and src_task.get("pri") not in ("P1", "P2"):
         src_task["pri"] = "P2"
-        update_core_file_priority(src_task.get("task", ""), "P2", now)
+        update_core_file_priority(src_task.get("task", ""), "P2", now, week=data.get("week"))
     elif tgt_title == "Lower Priority" and src_task.get("pri") in ("P1", "P2"):
         src_task["pri"] = "P3"
-        update_core_file_priority(src_task.get("task", ""), "P3", now)
+        update_core_file_priority(src_task.get("task", ""), "P3", now, week=data.get("week"))
 
     # Monitoring entry/exit flips state marker
     if tgt_title == "Monitoring" and src_task.get("status") != "waiting":
         src_task["status"] = "waiting"
-        update_core_file(src_task.get("task", ""), "waiting", now)
+        update_core_file(src_task.get("task", ""), "waiting", now, week=data.get("week"))
     elif src_title == "Monitoring" and tgt_title != "Monitoring":
         src_task["status"] = "open"
-        update_core_file(src_task.get("task", ""), "open", now)
+        update_core_file(src_task.get("task", ""), "open", now, week=data.get("week"))
 
     tgt_section["tasks"].append(src_task)
     renumber_tasks(data)
@@ -1912,18 +1897,18 @@ def apply_reorder(from_num, to_num, before=True):
         # Priority bumps for High/Lower Priority moves
         if tgt_title == "High Priority" and src_task.get("pri") not in ("P1", "P2"):
             src_task["pri"] = "P2"
-            update_core_file_priority(src_task.get("task", ""), "P2", now)
+            update_core_file_priority(src_task.get("task", ""), "P2", now, week=data.get("week"))
         elif tgt_title == "Lower Priority" and src_task.get("pri") in ("P1", "P2"):
             src_task["pri"] = "P3"
-            update_core_file_priority(src_task.get("task", ""), "P3", now)
+            update_core_file_priority(src_task.get("task", ""), "P3", now, week=data.get("week"))
 
         # Monitoring entry/exit flips the [~] / [ ] marker
         if tgt_title == "Monitoring" and src_task.get("status") != "waiting":
             src_task["status"] = "waiting"
-            update_core_file(src_task.get("task", ""), "waiting", now)
+            update_core_file(src_task.get("task", ""), "waiting", now, week=data.get("week"))
         elif src_title == "Monitoring" and tgt_title != "Monitoring":
             src_task["status"] = "open"
-            update_core_file(src_task.get("task", ""), "open", now)
+            update_core_file(src_task.get("task", ""), "open", now, week=data.get("week"))
 
     insert_pos = tgt_idx if before else tgt_idx + 1
     tgt_section["tasks"].insert(insert_pos, src_task)
@@ -1941,9 +1926,9 @@ def apply_reorder(from_num, to_num, before=True):
     return True
 
 
-def add_to_core_file(name, pri, due, why, links):
+def add_to_core_file(name, pri, due, why, links, week=None):
     """Insert a new active task line before ## Done in the core file."""
-    core_path = current_core_path()
+    core_path = current_core_path(week)
     if not core_path.exists():
         return
     lines = core_path.read_text().split("\n")
@@ -2000,7 +1985,7 @@ def apply_add(task_data):
     renumber_tasks(data)
     data["updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    add_to_core_file(name, pri, due, why, links)
+    add_to_core_file(name, pri, due, why, links, week=data.get("week"))
     return True
 
 
@@ -2030,7 +2015,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             json_mtime = os.path.getmtime(JSON_FILE)
             src_mtime  = os.path.getmtime(os.path.abspath(__file__))
-            combined_mtime = max(json_mtime, src_mtime)
+            # Include current-week core file mtime so a `## Done` edit busts the
+            # ETag — the sparkline reads it directly and would otherwise stay stale.
+            try:
+                core_mtime = os.path.getmtime(current_core_path())
+            except OSError:
+                core_mtime = 0
+            combined_mtime = max(json_mtime, src_mtime, core_mtime)
             etag = f'"{combined_mtime:.6f}-{view}"'
             last_modified = email.utils.formatdate(int(combined_mtime), usegmt=True)
         except Exception:
