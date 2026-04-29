@@ -291,6 +291,14 @@ tr.row-blocked  td { background: rgba(248, 81, 73, 0.06); }
 tr.row-progress td { background: rgba(56, 139, 253, 0.05); }
 tr.row-due-soon td { background: rgba(230, 179, 65, 0.07); }
 tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
+.section-header { display: flex; align-items: center; justify-content: space-between; }
+.expand-all-btn {
+  background: transparent; border: 0; cursor: pointer;
+  color: #6e7681; font-size: 11px; line-height: 1;
+  padding: 2px 4px; border-radius: 3px;
+}
+.expand-all-btn:hover { color: #c9d1d9; background: #21262d; }
+.expand-all-btn.open { color: #58a6ff; }
 td.task-cell { cursor: pointer; }
 td.task-cell:hover { color: #58a6ff; }
 tr.expanded td.task-cell { color: #58a6ff; }
@@ -583,6 +591,29 @@ function _post(url, payload) {
 }
 
 document.addEventListener('click', function(e) {
+  // Expand-all chevron in section headers — toggles every detail panel
+  // in this section's task-card (or whatever wrapper holds the rows).
+  var expandBtn = e.target.closest('[data-action="expand-all"]');
+  if (expandBtn) {
+    e.preventDefault();
+    var scope = expandBtn.closest('.task-card') || expandBtn.parentElement.parentElement;
+    if (!scope) return;
+    var rows = scope.querySelectorAll('tr[draggable="true"], .cmp-row[data-id]');
+    var anyCollapsed = Array.prototype.some.call(rows, function(r) {
+      return !r.classList.contains('expanded');
+    });
+    rows.forEach(function(r) {
+      r.classList.toggle('expanded', anyCollapsed);
+      var nxt = r.nextElementSibling;
+      if (nxt && nxt.classList.contains('cmp-detail')) {
+        nxt.classList.toggle('open', anyCollapsed);
+      }
+    });
+    expandBtn.textContent = anyCollapsed ? '▴' : '▾';
+    expandBtn.classList.toggle('open', anyCollapsed);
+    return;
+  }
+
   // Uncomplete via # cell on completed rows (table view OR compact dashboard view)
   var done_td = e.target.closest('td.num-done, .cmp-id-done');
   if (done_td && done_td.dataset.id) {
@@ -773,9 +804,13 @@ function _refreshTasks(force) {
   if (_dragPaused) return;
   if (!force && !document.hasFocus()) return;
   var sy = window.scrollY;
-  // Preserve which compact-row detail panels are currently expanded across the swap
+  // Preserve which detail panels are currently expanded across the swap
   var openIds = Array.prototype.map.call(
     document.querySelectorAll('.cmp-detail.open'),
+    function(el) { return el.dataset.id; }
+  );
+  var expandedTrIds = Array.prototype.map.call(
+    document.querySelectorAll('tr.expanded[draggable="true"]'),
     function(el) { return el.dataset.id; }
   );
   // Preserve the current view by including the search string in the fetch URL
@@ -796,6 +831,10 @@ function _refreshTasks(force) {
           var prev = detail.previousElementSibling;
           if (prev && prev.classList.contains('cmp-row')) prev.classList.add('expanded');
         }
+      });
+      expandedTrIds.forEach(function(id) {
+        var row = document.querySelector('tr[draggable="true"][data-id="' + id + '"]');
+        if (row) row.classList.add('expanded');
       });
     }
     var freshStyle = doc.querySelector('style');
@@ -903,9 +942,19 @@ def h(text):
             .replace('"', "&quot;"))
 
 
-def _section_header(label, color):
-    """Standard section header bar with the section's accent colour."""
-    return f'<div class="section-header" style="border-left-color:{color}">{h(label)}</div>\n'
+def _section_header(label, color, *, expandable=False):
+    """Standard section header bar with the section's accent colour.
+    If `expandable=True`, append a chevron toggle that expands/collapses
+    every detail panel in the following section."""
+    btn = (
+        '<button class="expand-all-btn" data-action="expand-all" '
+        'title="Expand / collapse all">▾</button>'
+        if expandable else ""
+    )
+    return (
+        f'<div class="section-header" style="border-left-color:{color}">'
+        f'{h(label)}{btn}</div>\n'
+    )
 
 def format_age(from_week, current_week, added=None):
     """Show task age. Uses 'added' date (days) if available, falls back to week diff."""
@@ -1007,6 +1056,7 @@ def render_core_section(title, tasks, week):
     label = title
 
     rows = []
+    any_why = False
     for t in tasks:
         rc = row_classes(t)
         task_id = t.get("id", t.get("num", ""))
@@ -1015,6 +1065,8 @@ def render_core_section(title, tasks, week):
         drag_attrs = f' draggable="true" data-id="{task_id}"'
         why = (t.get("why") or "").strip()
         has_why = bool(why) and why != "—"
+        if has_why:
+            any_why = True
         # Only mark the task cell clickable when there's a detail to reveal,
         # so empty-why rows don't have a dead expand affordance.
         task_cls = "task-cell" if has_why else ""
@@ -1050,7 +1102,7 @@ def render_core_section(title, tasks, week):
         '<th style="width:120px">Status</th>',
     ]
     return (
-        _section_header(label, color)
+        _section_header(label, color, expandable=any_why)
         + f'<table><thead><tr>{"".join(headers)}</tr></thead><tbody>\n'
         + "\n".join(rows)
         + "\n</tbody></table>\n"
@@ -1098,7 +1150,7 @@ def render_compact_section(title, tasks, week):
             f'<div class="cmp-detail" data-id="{task_id}">{"".join(detail_parts)}</div>'
         )
     return (
-        _section_header(label, color)
+        _section_header(label, color, expandable=True)
         + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 
@@ -1374,7 +1426,7 @@ def render_compact_completed(tasks):
             f'<div class="cmp-detail" data-id="{task_id}">{"".join(detail_parts)}</div>'
         )
     return (
-        _section_header("Completed today", color)
+        _section_header("Completed today", color, expandable=True)
         + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 

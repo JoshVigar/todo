@@ -248,6 +248,40 @@ def test_table_row_expand_reveals_why_detail(data):
     assert "td.task-cell" in html and "classList.toggle('expanded')" in html
 
 
+def test_expand_all_button_in_compact_section_headers(data):
+    """Compact sections (Monitoring, Lower Priority, Completed Today) always
+    have expandable detail panels — they should always carry an expand-all
+    chevron in the header."""
+    html = st.build_page(data, view="dashboard")
+    # All three compact sections present in the fixture; each should have one button
+    assert html.count('data-action="expand-all"') >= 3, (
+        f"expected ≥3 expand-all buttons (compact sections), got "
+        f"{html.count('data-action=\"expand-all\"')}"
+    )
+
+
+def test_expand_all_button_in_table_section_only_when_any_why(data):
+    """Table sections (High Priority, Today's Focus) get the expand-all
+    chevron only when at least one task in the section has a real why."""
+    # Force ALL whys to be empty
+    for s in data["sections"]:
+        for t in s["tasks"]:
+            t["why"] = "—"
+    html = st.build_page(data, view="dashboard")
+    # Compact sections always have it (3 buttons). Tables shouldn't add more.
+    no_why_count = html.count('data-action="expand-all"')
+
+    # Now give one High Priority task a why
+    high = next(s for s in data["sections"] if s["title"] == "High Priority")
+    high["tasks"][0]["why"] = "needs to ship"
+    html2 = st.build_page(data, view="dashboard")
+    with_why_count = html2.count('data-action="expand-all"')
+    assert with_why_count == no_why_count + 1, (
+        f"High Priority should add 1 expand-all button when any task has a "
+        f"why; before={no_why_count}, after={with_why_count}"
+    )
+
+
 def test_table_row_expand_suppressed_when_no_why(data):
     """Rows without a why have no click affordance — task-cell class is
     only applied to rows that actually have something to reveal."""
