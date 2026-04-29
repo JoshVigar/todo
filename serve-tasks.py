@@ -682,10 +682,8 @@ document.getElementById('modal-save').addEventListener('click', function() {
     link_label: document.getElementById('m-link-label').value.trim(),
     link_url: document.getElementById('m-link-url').value.trim()
   };
-  console.debug('[add] POST starting');
   fetch('/add', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
     .then(function(r) {
-      console.debug('[add] POST returned', r.status);
       if (!r.ok) return;
       _refreshTasks(true);
       closeModal();
@@ -762,9 +760,8 @@ document.addEventListener('drop', function(e) {
 // user just clicked, they want immediate feedback). SSE / poll / focus
 // listeners pass nothing and respect focus.
 function _refreshTasks(force) {
-  console.debug('[refresh] called, force=', force, 'hasFocus=', document.hasFocus(), 'dragPaused=', _dragPaused);
-  if (_dragPaused) { console.debug('[refresh] skipped: drag paused'); return; }
-  if (!force && !document.hasFocus()) { console.debug('[refresh] skipped: no focus'); return; }
+  if (_dragPaused) return;
+  if (!force && !document.hasFocus()) return;
   var sy = window.scrollY;
   // Preserve which compact-row detail panels are currently expanded across the swap
   var openIds = Array.prototype.map.call(
@@ -773,17 +770,14 @@ function _refreshTasks(force) {
   );
   // Preserve the current view by including the search string in the fetch URL
   fetch('/' + window.location.search).then(function(r) {
-    console.debug('[refresh] GET status', r.status);
     if (r.status === 304) return null;
     return r.text();
   }).then(function(html) {
-    if (!html) { console.debug('[refresh] no html (304)'); return; }
+    if (!html) return;
     var doc = new DOMParser().parseFromString(html, 'text/html');
     var fresh = doc.querySelector('#tasks-content');
-    console.debug('[refresh] parsed, fresh found=', !!fresh, 'len=', html.length);
     if (fresh) {
       document.getElementById('tasks-content').innerHTML = fresh.innerHTML;
-      console.debug('[refresh] DOM swapped');
       window.scrollTo(0, sy);
       openIds.forEach(function(id) {
         var detail = document.querySelector('.cmp-detail[data-id="' + id + '"]');
@@ -801,7 +795,7 @@ function _refreshTasks(force) {
         cur.textContent = freshStyle.textContent;
       }
     }
-  }).catch(function(e){ console.error('[refresh] error:', e); });
+  }).catch(function(){});
 }
 // Server-Sent Events: server pushes a `data:` line whenever any backing
 // file mtime changes (~50ms latency). Polling stays as a fallback in case
@@ -2153,6 +2147,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if etag is not None and inm and inm == etag:
             self.send_response(304)
             self.send_header("ETag", etag)
+            # `no-cache` forces the browser to always revalidate instead of
+            # serving from heuristic cache without hitting us. Without this,
+            # Chrome happily returned a stale cached body to fetch() and the
+            # post-/add refresh appeared to succeed (200) but showed old state.
+            self.send_header("Cache-Control", "no-cache")
             if last_modified:
                 self.send_header("Last-Modified", last_modified)
             self.end_headers()
@@ -2167,6 +2166,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
         if etag:
             self.send_header("ETag", etag)
         if last_modified:
