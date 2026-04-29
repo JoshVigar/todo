@@ -219,6 +219,32 @@ MUTATING_ROUTES = [
 ]
 
 
+def test_why_column_truncates_until_row_expanded(data):
+    """Tables truncate Why to one line by default and reveal full text
+    when the row gets `.expanded` class (set by clicking the task cell).
+    Mirrors the compact-row click-to-expand pattern."""
+    # Give the High Priority task a real `why` so show_why fires for the
+    # table render. (Default fixture only has a why on a compact-section task.)
+    high = next(s for s in data["sections"] if s["title"] == "High Priority")
+    high["tasks"][0]["why"] = "needs to ship before Friday"
+    html = st.build_page(data, view="dashboard")
+    # Why cell is rendered with class so CSS can target it
+    assert 'class="why"' in html, "Why cell missing the .why class"
+    # Task cell is rendered with class so click handler can target it
+    assert 'class="task-cell"' in html, "Task cell missing the .task-cell class"
+    # CSS truncates by default
+    assert "td.why { white-space: nowrap" in html or \
+        re.search(r"td\.why\s*\{[^}]*white-space:\s*nowrap", html), (
+        "Why column doesn't truncate by default"
+    )
+    # Expanded row reveals it
+    assert "tr.expanded td.why" in html, "No expanded-row rule for Why"
+    # Click handler toggles .expanded
+    assert "td.task-cell" in html and "classList.toggle('expanded')" in html, (
+        "Click handler missing for task-cell expand"
+    )
+
+
 def test_post_helper_refreshes_after_response(data):
     """The shared `_post` helper must call `_refreshTasks(true)` after the
     response. This is the load-bearing invariant for every call site."""

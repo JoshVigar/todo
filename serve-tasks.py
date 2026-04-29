@@ -291,6 +291,11 @@ tr.row-blocked  td { background: rgba(248, 81, 73, 0.06); }
 tr.row-progress td { background: rgba(56, 139, 253, 0.05); }
 tr.row-due-soon td { background: rgba(230, 179, 65, 0.07); }
 tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
+td.task-cell { cursor: pointer; }
+td.task-cell:hover { color: #58a6ff; }
+td.why { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #8b949e; font-size: 12px; }
+tr.expanded td.why { white-space: normal; overflow: visible; text-overflow: clip; color: #c9d1d9; font-style: italic; }
+tr.expanded td.task-cell { color: #58a6ff; }
 .badge {
   display: inline-block;
   padding: 2px 8px; border-radius: 10px;
@@ -637,6 +642,14 @@ document.addEventListener('click', function(e) {
         row.classList.toggle('expanded');
       }
     }
+  }
+
+  // Table-row expand: click task cell to toggle .expanded on the row.
+  // Same idiom as compact rows — reveals the truncated Why column.
+  var taskCell = e.target.closest('td.task-cell');
+  if (taskCell) {
+    var trRow = taskCell.closest('tr');
+    if (trRow) trRow.classList.toggle('expanded');
   }
 });
 
@@ -992,14 +1005,14 @@ def render_core_section(title, tasks, week):
         cells = [
             f'<td class="num" data-id="{task_id}">{task_id}</td>',
             f'<td>{render_pri(t.get("pri"), task_id)}</td>',
-            f'<td>{h(t.get("task",""))}</td>',
+            f'<td class="task-cell">{h(t.get("task",""))}</td>',
             f'<td>{due_html}</td>',
             f'<td>{format_age(t.get("from"), week, t.get("added"))}</td>',
             f'<td>{render_links(t.get("links",[]))}</td>',
             f'<td>{render_status(t.get("status","open"), task_id)}</td>',
         ]
         if show_why:
-            cells.append(f'<td>{h(t.get("why") or "—")}</td>')
+            cells.append(f'<td class="why">{h(t.get("why") or "—")}</td>')
         rows.append(f'<tr{rc}{drag_attrs}>{"".join(cells)}</tr>')
     headers = [
         '<th style="width:32px">#</th>',
