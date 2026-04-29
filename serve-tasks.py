@@ -684,12 +684,15 @@ document.getElementById('modal-save').addEventListener('click', function() {
   };
   fetch('/add', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
     .then(function(r) {
-      if (r.ok) {
-        closeModal();
-        ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){document.getElementById(id).value='';});
-        document.getElementById('m-pri').value = 'P2';
-        _refreshTasks(true);
-      }
+      if (!r.ok) return;
+      _refreshTasks(true);
+      closeModal();
+      ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){
+        var el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      var pri = document.getElementById('m-pri');
+      if (pri) pri.value = 'P2';
     });
 });
 
