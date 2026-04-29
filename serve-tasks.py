@@ -294,8 +294,8 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
 .section-header { display: flex; align-items: center; justify-content: space-between; }
 .expand-all-btn {
   background: transparent; border: 0; cursor: pointer;
-  color: #6e7681; font-size: 16px; line-height: 1;
-  padding: 2px 8px; border-radius: 4px;
+  color: #6e7681; font-size: 32px; line-height: 1;
+  padding: 0 10px; border-radius: 4px;
 }
 .expand-all-btn:hover { color: #c9d1d9; background: #21262d; }
 .expand-all-btn.open { color: #58a6ff; }
@@ -590,6 +590,29 @@ function _post(url, payload) {
   }).then(function(r) { _refreshTasks(true); return r; });
 }
 
+// Toggle every expandable row in `scope` (defaults to whole document).
+// If anything is collapsed, expand all; if everything is already expanded,
+// collapse all. Syncs every expand-all chevron in scope to match.
+function _toggleExpandAll(scope) {
+  scope = scope || document;
+  var rows = scope.querySelectorAll('tr[draggable="true"], .cmp-row[data-id]');
+  if (!rows.length) return;
+  var anyCollapsed = Array.prototype.some.call(rows, function(r) {
+    return !r.classList.contains('expanded');
+  });
+  rows.forEach(function(r) {
+    r.classList.toggle('expanded', anyCollapsed);
+    var nxt = r.nextElementSibling;
+    if (nxt && nxt.classList.contains('cmp-detail')) {
+      nxt.classList.toggle('open', anyCollapsed);
+    }
+  });
+  scope.querySelectorAll('.expand-all-btn').forEach(function(b) {
+    b.textContent = anyCollapsed ? '▴' : '▾';
+    b.classList.toggle('open', anyCollapsed);
+  });
+}
+
 document.addEventListener('click', function(e) {
   // Expand-all chevron in section headers — toggles every detail panel
   // in this section's task-card (or whatever wrapper holds the rows).
@@ -597,20 +620,7 @@ document.addEventListener('click', function(e) {
   if (expandBtn) {
     e.preventDefault();
     var scope = expandBtn.closest('.task-card') || expandBtn.parentElement.parentElement;
-    if (!scope) return;
-    var rows = scope.querySelectorAll('tr[draggable="true"], .cmp-row[data-id]');
-    var anyCollapsed = Array.prototype.some.call(rows, function(r) {
-      return !r.classList.contains('expanded');
-    });
-    rows.forEach(function(r) {
-      r.classList.toggle('expanded', anyCollapsed);
-      var nxt = r.nextElementSibling;
-      if (nxt && nxt.classList.contains('cmp-detail')) {
-        nxt.classList.toggle('open', anyCollapsed);
-      }
-    });
-    expandBtn.textContent = anyCollapsed ? '▴' : '▾';
-    expandBtn.classList.toggle('open', anyCollapsed);
+    _toggleExpandAll(scope);
     return;
   }
 
@@ -905,6 +915,33 @@ document.addEventListener('click', function(e) {
 });
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') document.getElementById('ctx-menu').classList.remove('open');
+});
+
+// Single-letter hotkeys: x=expand-all, r=refresh, s=sort, a=add task.
+// Fire only when the page has focus, no modal is open, no input is focused,
+// and no modifier keys are held (so Cmd+R / Cmd+A still work as expected).
+document.addEventListener('keydown', function(e) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!document.hasFocus()) return;
+  var modal = document.getElementById('modal-overlay');
+  if (modal && modal.classList.contains('open')) return;
+  var t = document.activeElement;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+            t.tagName === 'SELECT' || t.isContentEditable)) return;
+  if (e.key === 'x') {
+    e.preventDefault();
+    _toggleExpandAll();
+  } else if (e.key === 'r') {
+    e.preventDefault();
+    _refreshTasks(true);
+  } else if (e.key === 's') {
+    e.preventDefault();
+    _post('/sort', {});
+  } else if (e.key === 'a') {
+    e.preventDefault();
+    document.getElementById('modal-overlay').classList.add('open');
+    setTimeout(function(){ document.getElementById('m-task').focus(); }, 50);
+  }
 });
 
 // Custom hover tooltip — fires immediately, no native delay.

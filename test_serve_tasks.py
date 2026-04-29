@@ -296,6 +296,24 @@ def test_table_row_expand_suppressed_when_no_why(data):
     assert '<tr class="row-detail"' not in html, "row-detail emitted with no whys"
 
 
+def test_hotkeys_present_with_required_guards(data):
+    """The single-letter hotkey block must guard against firing while a
+    modifier is held, the tab is unfocused, the add modal is open, or an
+    input is focused — otherwise it'd hijack Cmd+R, type-into-fields, etc."""
+    html = st.build_page(data, view="dashboard")
+    # Hotkeys are wired
+    assert "_toggleExpandAll()" in html, "x hotkey not calling _toggleExpandAll"
+    assert "if (e.key === 'x')" in html
+    assert "if (e.key === 'r')" in html
+    assert "if (e.key === 's')" in html
+    assert "if (e.key === 'a')" in html
+    # Required guards
+    assert "metaKey" in html and "ctrlKey" in html and "altKey" in html
+    assert "document.hasFocus()" in html
+    assert "modal-overlay" in html and "classList.contains('open')" in html
+    assert "INPUT" in html and "TEXTAREA" in html
+
+
 def test_post_helper_refreshes_after_response(data):
     """The shared `_post` helper must call `_refreshTasks(true)` after the
     response. This is the load-bearing invariant for every call site."""
