@@ -293,9 +293,23 @@ tr.row-due-soon td { background: rgba(230, 179, 65, 0.07); }
 tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
 td.task-cell { cursor: pointer; }
 td.task-cell:hover { color: #58a6ff; }
-td.why { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #8b949e; font-size: 12px; }
-tr.expanded td.why { white-space: normal; overflow: visible; text-overflow: clip; color: #c9d1d9; font-style: italic; }
 tr.expanded td.task-cell { color: #58a6ff; }
+tr.row-detail { display: none; }
+tr.row-detail > td {
+  padding: 6px 12px 8px 40px;
+  background: rgba(13, 17, 23, 0.55);
+  border-bottom: 1px solid #21262d;
+  color: #8b949e;
+  font-size: 12px;
+}
+tr.row-detail > td .field { display: inline-flex; align-items: center; gap: 6px; }
+tr.row-detail > td .field-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: #6e7681; font-weight: 700;
+}
+tr.row-detail > td .why-text { color: #c9d1d9; font-style: italic; }
+tr.expanded + tr.row-detail { display: table-row; }
+tr.expanded { background: rgba(56, 139, 253, 0.04); }
 .badge {
   display: inline-block;
   padding: 2px 8px; border-radius: 10px;
@@ -992,9 +1006,6 @@ def render_core_section(title, tasks, week):
     color = section_color(title)
     label = title
 
-    # Hide Why column when no task has a meaningful reason
-    show_why = any((t.get("why") or "—").strip() not in ("", "—") for t in tasks)
-
     rows = []
     for t in tasks:
         rc = row_classes(t)
@@ -1002,18 +1013,33 @@ def render_core_section(title, tasks, week):
         due = t.get("due") or "—"
         due_html = f'<span class="due">{h(due)}</span>' if is_due_soon(due) else h(due)
         drag_attrs = f' draggable="true" data-id="{task_id}"'
+        why = (t.get("why") or "").strip()
+        has_why = bool(why) and why != "—"
+        # Only mark the task cell clickable when there's a detail to reveal,
+        # so empty-why rows don't have a dead expand affordance.
+        task_cls = "task-cell" if has_why else ""
         cells = [
             f'<td class="num" data-id="{task_id}">{task_id}</td>',
             f'<td>{render_pri(t.get("pri"), task_id)}</td>',
-            f'<td class="task-cell">{h(t.get("task",""))}</td>',
+            f'<td class="{task_cls}">{h(t.get("task",""))}</td>',
             f'<td>{due_html}</td>',
             f'<td>{format_age(t.get("from"), week, t.get("added"))}</td>',
             f'<td>{render_links(t.get("links",[]))}</td>',
             f'<td>{render_status(t.get("status","open"), task_id)}</td>',
         ]
-        if show_why:
-            cells.append(f'<td class="why">{h(t.get("why") or "—")}</td>')
         rows.append(f'<tr{rc}{drag_attrs}>{"".join(cells)}</tr>')
+        # Sibling detail row revealed on `.expanded`. Mirrors the compact-row
+        # detail panel — but the table already shows pri/age/link/status, so
+        # the panel only carries the field that isn't visible: Why.
+        if has_why:
+            rows.append(
+                f'<tr class="row-detail" data-id="{task_id}">'
+                f'<td colspan="7">'
+                f'<span class="field"><span class="field-label">Why</span>'
+                f'<span class="why-text">{h(why)}</span></span>'
+                f'</td>'
+                f'</tr>'
+            )
     headers = [
         '<th style="width:32px">#</th>',
         '<th style="width:48px">Pri</th>',
@@ -1023,8 +1049,6 @@ def render_core_section(title, tasks, week):
         '<th style="width:90px">Link</th>',
         '<th style="width:120px">Status</th>',
     ]
-    if show_why:
-        headers.append('<th style="width:14%">Why</th>')
     return (
         _section_header(label, color)
         + f'<table><thead><tr>{"".join(headers)}</tr></thead><tbody>\n'

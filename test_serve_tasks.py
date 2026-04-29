@@ -219,30 +219,47 @@ MUTATING_ROUTES = [
 ]
 
 
-def test_why_column_truncates_until_row_expanded(data):
-    """Tables truncate Why to one line by default and reveal full text
-    when the row gets `.expanded` class (set by clicking the task cell).
-    Mirrors the compact-row click-to-expand pattern."""
-    # Give the High Priority task a real `why` so show_why fires for the
-    # table render. (Default fixture only has a why on a compact-section task.)
+def test_table_row_expand_reveals_why_detail(data):
+    """Tasks in table sections (High Priority, Today's Focus) with a real
+    `why` get a sibling `<tr class="row-detail">` revealed on click. Mirrors
+    the compact-row click-to-expand pattern but as a row below the task
+    rather than a column expansion."""
+    # Default fixture's only why is on a compact-section task; give a
+    # table-section task a why so the row-detail renders.
     high = next(s for s in data["sections"] if s["title"] == "High Priority")
     high["tasks"][0]["why"] = "needs to ship before Friday"
+    target_id = high["tasks"][0]["id"]
     html = st.build_page(data, view="dashboard")
-    # Why cell is rendered with class so CSS can target it
-    assert 'class="why"' in html, "Why cell missing the .why class"
-    # Task cell is rendered with class so click handler can target it
-    assert 'class="task-cell"' in html, "Task cell missing the .task-cell class"
-    # CSS truncates by default
-    assert "td.why { white-space: nowrap" in html or \
-        re.search(r"td\.why\s*\{[^}]*white-space:\s*nowrap", html), (
-        "Why column doesn't truncate by default"
+
+    # Sibling row-detail tr is emitted for tasks with a why
+    assert f'<tr class="row-detail" data-id="{target_id}"' in html, (
+        f"row-detail not emitted for task id={target_id}"
     )
-    # Expanded row reveals it
-    assert "tr.expanded td.why" in html, "No expanded-row rule for Why"
-    # Click handler toggles .expanded
-    assert "td.task-cell" in html and "classList.toggle('expanded')" in html, (
-        "Click handler missing for task-cell expand"
-    )
+    assert "needs to ship before Friday" in html
+
+    # The task cell is the click target only when there's a detail to reveal
+    assert 'class="task-cell"' in html, "task-cell class missing"
+
+    # CSS keeps the detail row hidden until the task row above is expanded
+    assert "tr.row-detail { display: none; }" in html
+    assert "tr.expanded + tr.row-detail { display: table-row; }" in html
+
+    # Click handler toggles .expanded on the task row
+    assert "td.task-cell" in html and "classList.toggle('expanded')" in html
+
+
+def test_table_row_expand_suppressed_when_no_why(data):
+    """Rows without a why have no click affordance — task-cell class is
+    only applied to rows that actually have something to reveal."""
+    # Make sure NO table task has a why
+    for s in data["sections"]:
+        if s["title"] in ("High Priority", "Today's Focus"):
+            for t in s["tasks"]:
+                t["why"] = "—"
+    html = st.build_page(data, view="dashboard")
+    # No row-detail tr emitted (compact section's why doesn't render in the
+    # detail-row pattern; that path uses cmp-detail)
+    assert '<tr class="row-detail"' not in html, "row-detail emitted with no whys"
 
 
 def test_post_helper_refreshes_after_response(data):
