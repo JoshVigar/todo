@@ -35,7 +35,8 @@ def _watch_self():
                     pass
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
-threading.Thread(target=_watch_self, daemon=True).start()
+if not os.environ.get("SERVE_TASKS_NO_WATCH"):
+    threading.Thread(target=_watch_self, daemon=True).start()
 
 JSON_FILE = Path.home() / "todo" / "tasks-live.json"
 REQUEST_LOG = Path.home() / "todo" / "serve-tasks-requests.log"
@@ -148,7 +149,8 @@ def _watch_state():
             _state_cond.notify_all()
 
 
-threading.Thread(target=_watch_state, daemon=True).start()
+if not os.environ.get("SERVE_TASKS_NO_WATCH"):
+    threading.Thread(target=_watch_state, daemon=True).start()
 
 _TASK_NAME_BOUNDARY = re.compile(r"\s+(?:—|\(|_\()")
 
@@ -563,22 +565,30 @@ document.addEventListener('click', function(e) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(done_td.dataset.id)})
-    }).then(_refreshTasks);
+    }).then(function(r) {
+      if (r.ok) _refreshTasks(true);
+      else if (row) row.style.opacity = '';
+    });
     return;
   }
 
-  // Complete task via # cell on active rows
+  // Complete task via # cell on active rows (table OR compact dashboard)
   var num_td = e.target.closest('td.num:not(.num-done), .cmp-id');
   if (num_td && num_td.dataset.id) {
     e.preventDefault();
-    var row = num_td.closest('tr');
-    row.style.opacity = '0.35';
-    row.style.transition = 'opacity 0.2s';
+    var row = num_td.closest('tr, .cmp-row');
+    if (row) {
+      row.style.opacity = '0.35';
+      row.style.transition = 'opacity 0.2s';
+    }
     fetch('/complete', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(num_td.dataset.id)})
-    }).then(_refreshTasks);
+    }).then(function(r) {
+      if (r.ok) _refreshTasks(true);
+      else if (row) row.style.opacity = '';
+    });
     return;
   }
 
@@ -596,7 +606,7 @@ document.addEventListener('click', function(e) {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({id: parseInt(badge.dataset.id)})
-      });
+      }).then(function(r) { if (!r.ok) _refreshTasks(true); });
     }
     return;
   }
@@ -614,7 +624,7 @@ document.addEventListener('click', function(e) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(pri.dataset.id)})
-    });
+    }).then(function(r) { if (!r.ok) _refreshTasks(true); });
     return;
   }
 
@@ -642,7 +652,8 @@ document.addEventListener('click', function(e) {
 
 // Sort button
 document.getElementById('sort-btn').addEventListener('click', function() {
-  fetch('/sort', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(_refreshTasks);
+  fetch('/sort', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
+    .then(function(r) { if (r.ok) _refreshTasks(true); });
 });
 
 // Add button + modal
@@ -677,6 +688,7 @@ document.getElementById('modal-save').addEventListener('click', function() {
         closeModal();
         ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){document.getElementById(id).value='';});
         document.getElementById('m-pri').value = 'P2';
+        _refreshTasks(true);
       }
     });
 });
@@ -723,7 +735,7 @@ document.addEventListener('drop', function(e) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({from: _dragNum, to: toNum, before: before})
-  }).then(_refreshTasks);
+  }).then(function(r) { if (r.ok) _refreshTasks(true); });
 });
 
 // View persistence — remember the user's chosen view across sessions.
@@ -741,10 +753,12 @@ document.addEventListener('drop', function(e) {
 })();
 
 // Scroll-preserving auto-refresh (updates both content and styles).
-// Only runs when the tab has focus — switching to another app or tab pauses polling.
-function _refreshTasks() {
+// `force=true` bypasses the focus guard for click-driven refreshes (the
+// user just clicked, they want immediate feedback). SSE / poll / focus
+// listeners pass nothing and respect focus.
+function _refreshTasks(force) {
   if (_dragPaused) return;
-  if (!document.hasFocus()) return;
+  if (!force && !document.hasFocus()) return;
   var sy = window.scrollY;
   // Preserve which compact-row detail panels are currently expanded across the swap
   var openIds = Array.prototype.map.call(
@@ -795,6 +809,7 @@ function _connectSSE() {
 _connectSSE();
 setInterval(_refreshTasks, 30000);
 // Refresh immediately on regaining focus so you see fresh data as soon as you switch back.
+// `_refreshTasks` itself drops the call when the tab isn't focused.
 window.addEventListener('focus', _refreshTasks);
 
 // Right-click context menu — move tasks between sections without dragging
@@ -820,6 +835,9 @@ document.addEventListener('click', function(e) {
     if (item.dataset.action === 'cancel') {
       endpoint = '/cancel';
       payload = {id: _ctxTaskId};
+    } else if (item.dataset.action === 'complete') {
+      endpoint = '/complete';
+      payload = {id: _ctxTaskId};
     } else {
       endpoint = '/move-section';
       payload = {id: _ctxTaskId, section: item.dataset.section};
@@ -828,7 +846,7 @@ document.addEventListener('click', function(e) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
-    }).then(_refreshTasks);
+    }).then(function(r) { if (r.ok) _refreshTasks(true); });
     document.getElementById('ctx-menu').classList.remove('open');
     _ctxTaskId = null;
     return;
@@ -1304,7 +1322,8 @@ def render_workdays_sparkline():
 
 def render_compact_completed(tasks):
     """Compact rendering for dashboard view: matches the Monitoring/Lower Priority style.
-    The id cell uncompletes (handled by .cmp-id-done in the global click handler)."""
+    The id cell uncompletes (handled by .cmp-id-done in the global click handler).
+    Click the task name to expand the detail panel — completion time + link + source."""
     if not tasks:
         return ""
     color = SECTION_COLORS["completed today"]
@@ -1320,6 +1339,20 @@ def render_compact_completed(tasks):
             f'<span class="cmp-task">{h(t.get("task",""))}</span>'
             f'{time_html}'
             f'</div>'
+        )
+        detail_parts = [
+            f'<span class="field"><span class="field-label">Time</span>{h(time) if time else "—"}</span>',
+        ]
+        if t.get("from_section"):
+            detail_parts.append(
+                f'<span class="field"><span class="field-label">From</span>{h(t["from_section"])}</span>'
+            )
+        if t.get("links"):
+            detail_parts.append(
+                f'<span class="field"><span class="field-label">Links</span>{render_links(t.get("links"))}</span>'
+            )
+        rows.append(
+            f'<div class="cmp-detail" data-id="{task_id}">{"".join(detail_parts)}</div>'
         )
     return (
         _section_header("Completed today", color)
@@ -1475,6 +1508,7 @@ def build_page(data, view="dashboard"):
         f'<div class="ctx-item" data-section="{SEC_HIGH}">{SEC_HIGH}</div>'
         f'<div class="ctx-item" data-section="{SEC_LOW}">{SEC_LOW}</div>'
         f'<div class="ctx-divider"></div>'
+        f'<div class="ctx-item" data-action="complete">✅ Mark as done</div>'
         f'<div class="ctx-item danger" data-action="cancel">Cancel task</div>'
         f'</div>'
         f'<script>{_js_consts()}{SCRIPT}</script>'
@@ -1833,6 +1867,7 @@ def apply_status_change(num, force_status=None):
             "task": task_name,
             "links": task.get("links", []),
             "time": now.strftime("%H:%M"),
+            "from_section": source_section.get("title", ""),
         })
     else:
         task["status"] = new_status
