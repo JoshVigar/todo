@@ -10,7 +10,9 @@ Run: SERVE_TASKS_NO_WATCH=1 python3 -m pytest test_serve_tasks.py -q
 import importlib.util
 import json
 import os
+import pathlib
 import re
+import time as time_module
 from pathlib import Path
 
 # Suppress the daemon threads (auto-restart + SSE notifier) before import.
@@ -203,6 +205,119 @@ def test_ctx_menu_has_mark_as_done(data):
     html = st.build_page(data, view="dashboard")
     assert 'data-action="complete"' in html
     assert "Mark as done" in html
+
+
+# ---------------------------------------------------------------------------
+# Refresh-after-mutation invariants
+# ---------------------------------------------------------------------------
+
+# Every mutating route the server accepts. Each must trigger a view refresh
+# (`_refreshTasks(true)`) so the dashboard never lies.
+MUTATING_ROUTES = [
+    "/update", "/complete", "/update-pri", "/uncomplete",
+    "/sort", "/reorder", "/move-section", "/cancel", "/add",
+]
+
+
+@pytest.mark.parametrize("route", MUTATING_ROUTES)
+def test_every_mutating_fetch_refreshes_on_success(data, route):
+    """For each mutating endpoint there's at least one client-side fetch
+    that triggers `_refreshTasks(true)` on the success path. Specifically:
+    a refresh that's gated only by `if (!r.ok)` does NOT count — that
+    only fires on failure. Previously the status/priority badge cycles
+    only refreshed on failure, so the counts strip went stale on success."""
+    html = st.build_page(data, view="dashboard")
+    error_only_re = re.compile(r"if\s*\(\s*!r\.ok\s*\)\s*_refreshTasks\(true\)")
+    for match in re.finditer(rf"fetch\('?{re.escape(route)}", html):
+        chunk = html[match.start():match.start() + 400]
+        total = chunk.count("_refreshTasks(true)")
+        error_only = len(error_only_re.findall(chunk))
+        assert total > 0, f"{route} doesn't refresh at all:\n{chunk[:400]}"
+        assert total > error_only, (
+            f"{route} only refreshes on `if (!r.ok)`; needs a success-path "
+            f"refresh too. Optimistic UI without server-confirmed refresh "
+            f"leaves counts/detail stale.\n{chunk[:400]}"
+        )
+
+
+def test_apply_status_change_bumps_json_mtime(isolated_state):
+    """SSE notifies clients via JSON mtime change. Each apply_* must move
+    the mtime forward, otherwise the SSE push doesn't fire."""
+    before = isolated_state.stat().st_mtime
+    time_module.sleep(0.01)  # ensure mtime resolution sees the change
+    assert st.apply_status_change(120)
+    after = isolated_state.stat().st_mtime
+    assert after > before
+
+
+def test_apply_priority_update_bumps_json_mtime(isolated_state):
+    before = isolated_state.stat().st_mtime
+    time_module.sleep(0.01)
+    assert st.apply_priority_update(120)
+    after = isolated_state.stat().st_mtime
+    assert after > before
+
+
+def test_apply_uncomplete_bumps_json_mtime(isolated_state):
+    before = isolated_state.stat().st_mtime
+    time_module.sleep(0.01)
+    assert st.apply_uncomplete(200)
+    after = isolated_state.stat().st_mtime
+    assert after > before
+
+
+def test_apply_sort_bumps_json_mtime(isolated_state):
+    before = isolated_state.stat().st_mtime
+    time_module.sleep(0.01)
+    assert st.apply_sort()
+    after = isolated_state.stat().st_mtime
+    assert after > before
+
+
+def test_apply_reorder_bumps_json_mtime(isolated_state):
+    before = isolated_state.stat().st_mtime
+    time_module.sleep(0.01)
+    # Swap 120 and 130 (both active)
+    assert st.apply_reorder(120, 130, before=True)
+    after = isolated_state.stat().st_mtime
+    assert after > before
+
+
+def test_apply_move_section_bumps_json_mtime(isolated_state):
+    before = isolated_state.stat().st_mtime
+    time_module.sleep(0.01)
+    assert st.apply_move_section(130, "High Priority")
+    after = isolated_state.stat().st_mtime
+    assert after > before
+
+
+def test_apply_cancel_bumps_json_mtime(isolated_state):
+    before = isolated_state.stat().st_mtime
+    time_module.sleep(0.01)
+    assert st.apply_cancel(120)
+    after = isolated_state.stat().st_mtime
+    assert after > before
+
+
+def test_apply_add_bumps_json_mtime(isolated_state):
+    before = isolated_state.stat().st_mtime
+    time_module.sleep(0.01)
+    assert st.apply_add({"task": "Newly added", "pri": "P3"})
+    after = isolated_state.stat().st_mtime
+    assert after > before
+
+
+def test_response_sets_cache_control_no_cache(data):
+    """Regression: without `Cache-Control: no-cache`, Chrome heuristically
+    cached the GET and served stale bodies after a POST mutation. The
+    DOM-swap appeared to succeed (200 from cache) but showed old state."""
+    # We can't easily intercept the actual HTTP response in-test, so
+    # instead spot-check that the do_GET handler sets the header.
+    src = pathlib.Path(__file__).parent / "serve-tasks.py"
+    text = src.read_text()
+    assert text.count('send_header("Cache-Control", "no-cache")') >= 2, (
+        "expected Cache-Control: no-cache on both 304 and 200 responses"
+    )
 
 
 # ---------------------------------------------------------------------------

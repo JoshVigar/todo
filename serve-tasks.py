@@ -606,7 +606,7 @@ document.addEventListener('click', function(e) {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({id: parseInt(badge.dataset.id)})
-      }).then(function(r) { if (!r.ok) _refreshTasks(true); });
+      }).then(function(r) { _refreshTasks(true); });
     }
     return;
   }
@@ -624,7 +624,7 @@ document.addEventListener('click', function(e) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: parseInt(pri.dataset.id)})
-    }).then(function(r) { if (!r.ok) _refreshTasks(true); });
+    }).then(function(r) { _refreshTasks(true); });
     return;
   }
 
