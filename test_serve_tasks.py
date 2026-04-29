@@ -219,24 +219,51 @@ MUTATING_ROUTES = [
 ]
 
 
+def test_post_helper_refreshes_after_response(data):
+    """The shared `_post` helper must call `_refreshTasks(true)` after the
+    response. This is the load-bearing invariant for every call site."""
+    html = st.build_page(data, view="dashboard")
+    idx = html.find("function _post(")
+    assert idx != -1, "_post helper not found in served JS"
+    # Look at the next ~500 chars for the body
+    chunk = html[idx:idx + 500]
+    assert "_refreshTasks(true)" in chunk, f"_post doesn't refresh:\n{chunk}"
+
+
 @pytest.mark.parametrize("route", MUTATING_ROUTES)
-def test_every_mutating_fetch_refreshes_on_success(data, route):
-    """For each mutating endpoint there's at least one client-side fetch
-    that triggers `_refreshTasks(true)` on the success path. Specifically:
-    a refresh that's gated only by `if (!r.ok)` does NOT count — that
-    only fires on failure. Previously the status/priority badge cycles
-    only refreshed on failure, so the counts strip went stale on success."""
+def test_every_mutating_route_referenced_in_client(data, route):
+    """Every mutating route the server accepts must have at least one
+    client-side trigger. Reference can be `_post('<route>', …)`,
+    `endpoint = '<route>'` (variable-routed via ctx menu), or a bare
+    `fetch('<route>', …)`. Catches dead routes and accidental typos."""
+    html = st.build_page(data, view="dashboard")
+    patterns = [
+        rf"_post\('{re.escape(route)}'",
+        rf"endpoint\s*=\s*'{re.escape(route)}'",
+        rf"fetch\('{re.escape(route)}'",
+    ]
+    assert any(re.search(p, html) for p in patterns), (
+        f"route {route} not referenced anywhere in client JS"
+    )
+
+
+@pytest.mark.parametrize("route", MUTATING_ROUTES)
+def test_no_bare_fetch_to_mutating_route_bypasses_refresh(data, route):
+    """Any bare `fetch('<route>', …)` (not via `_post`) must call
+    `_refreshTasks(true)` on its own success path — bypassing `_post`
+    means bypassing the refresh-on-success guarantee. A refresh gated
+    only by `if (!r.ok)` doesn't count (failure-only)."""
     html = st.build_page(data, view="dashboard")
     error_only_re = re.compile(r"if\s*\(\s*!r\.ok\s*\)\s*_refreshTasks\(true\)")
     for match in re.finditer(rf"fetch\('?{re.escape(route)}", html):
         chunk = html[match.start():match.start() + 400]
         total = chunk.count("_refreshTasks(true)")
         error_only = len(error_only_re.findall(chunk))
-        assert total > 0, f"{route} doesn't refresh at all:\n{chunk[:400]}"
+        assert total > 0, (
+            f"bare fetch to {route} bypasses _post and doesn't refresh:\n{chunk}"
+        )
         assert total > error_only, (
-            f"{route} only refreshes on `if (!r.ok)`; needs a success-path "
-            f"refresh too. Optimistic UI without server-confirmed refresh "
-            f"leaves counts/detail stale.\n{chunk[:400]}"
+            f"bare fetch to {route} only refreshes on failure:\n{chunk}"
         )
 
 

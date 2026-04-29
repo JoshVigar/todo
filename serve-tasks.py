@@ -551,6 +551,18 @@ def _js_consts():
 
 
 SCRIPT = """\
+// _post — POST JSON to a mutating endpoint and refresh the view from the
+// server response. Always refreshes (success → new state, failure → old
+// state, which clears any optimistic mutation). Returns the Response so
+// callers can do special-case handling (e.g. close a modal on success).
+function _post(url, payload) {
+  return fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload || {})
+  }).then(function(r) { _refreshTasks(true); return r; });
+}
+
 document.addEventListener('click', function(e) {
   // Uncomplete via # cell on completed rows (table view OR compact dashboard view)
   var done_td = e.target.closest('td.num-done, .cmp-id-done');
@@ -561,14 +573,7 @@ document.addEventListener('click', function(e) {
       row.style.opacity = '0.35';
       row.style.transition = 'opacity 0.2s';
     }
-    fetch('/uncomplete', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: parseInt(done_td.dataset.id)})
-    }).then(function(r) {
-      if (r.ok) _refreshTasks(true);
-      else if (row) row.style.opacity = '';
-    });
+    _post('/uncomplete', {id: parseInt(done_td.dataset.id)});
     return;
   }
 
@@ -581,18 +586,11 @@ document.addEventListener('click', function(e) {
       row.style.opacity = '0.35';
       row.style.transition = 'opacity 0.2s';
     }
-    fetch('/complete', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: parseInt(num_td.dataset.id)})
-    }).then(function(r) {
-      if (r.ok) _refreshTasks(true);
-      else if (row) row.style.opacity = '';
-    });
+    _post('/complete', {id: parseInt(num_td.dataset.id)});
     return;
   }
 
-  // Status cycle (optimistic)
+  // Status cycle (optimistic — refresh confirms / corrects)
   var badge = e.target.closest('.status-badge');
   if (badge && badge.dataset.id && badge.dataset.status) {
     e.preventDefault();
@@ -602,11 +600,7 @@ document.addEventListener('click', function(e) {
       badge.dataset.status = next;
       badge.textContent = STATUS_LABEL[next] || next;
       badge.className = 'badge status-badge ' + (STATUS_CLS[next] || 'b-open');
-      fetch('/update', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({id: parseInt(badge.dataset.id)})
-      }).then(function(r) { _refreshTasks(true); });
+      _post('/update', {id: parseInt(badge.dataset.id)});
     }
     return;
   }
@@ -620,11 +614,7 @@ document.addEventListener('click', function(e) {
     pri.dataset.pri = nextP;
     pri.textContent = PRI_LABEL[nextP] || nextP;
     pri.className = 'badge priority-badge ' + (PRI_CLS[nextP] || '');
-    fetch('/update-pri', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: parseInt(pri.dataset.id)})
-    }).then(function(r) { _refreshTasks(true); });
+    _post('/update-pri', {id: parseInt(pri.dataset.id)});
     return;
   }
 
@@ -652,8 +642,7 @@ document.addEventListener('click', function(e) {
 
 // Sort button
 document.getElementById('sort-btn').addEventListener('click', function() {
-  fetch('/sort', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
-    .then(function(r) { if (r.ok) _refreshTasks(true); });
+  _post('/sort', {});
 });
 
 // Add button + modal
@@ -682,18 +671,16 @@ document.getElementById('modal-save').addEventListener('click', function() {
     link_label: document.getElementById('m-link-label').value.trim(),
     link_url: document.getElementById('m-link-url').value.trim()
   };
-  fetch('/add', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
-    .then(function(r) {
-      if (!r.ok) return;
-      _refreshTasks(true);
-      closeModal();
-      ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){
-        var el = document.getElementById(id);
-        if (el) el.value = '';
-      });
-      var pri = document.getElementById('m-pri');
-      if (pri) pri.value = 'P2';
+  _post('/add', payload).then(function(r) {
+    if (!r.ok) return;
+    closeModal();
+    ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){
+      var el = document.getElementById(id);
+      if (el) el.value = '';
     });
+    var pri = document.getElementById('m-pri');
+    if (pri) pri.value = 'P2';
+  });
 });
 
 // Drag-and-drop reordering — works on both full table rows and compact rows
@@ -734,11 +721,7 @@ document.addEventListener('drop', function(e) {
   var toNum = parseInt(el.dataset.id);
   if (_dragNum === toNum) return;
   var before = e.clientY < el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2;
-  fetch('/reorder', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({from: _dragNum, to: toNum, before: before})
-  }).then(function(r) { if (r.ok) _refreshTasks(true); });
+  _post('/reorder', {from: _dragNum, to: toNum, before: before});
 });
 
 // View persistence — remember the user's chosen view across sessions.
@@ -845,11 +828,7 @@ document.addEventListener('click', function(e) {
       endpoint = '/move-section';
       payload = {id: _ctxTaskId, section: item.dataset.section};
     }
-    fetch(endpoint, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload)
-    }).then(function(r) { if (r.ok) _refreshTasks(true); });
+    _post(endpoint, payload);
     document.getElementById('ctx-menu').classList.remove('open');
     _ctxTaskId = null;
     return;
