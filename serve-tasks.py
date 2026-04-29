@@ -294,8 +294,8 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
 .section-header { display: flex; align-items: center; justify-content: space-between; }
 .expand-all-btn {
   background: transparent; border: 0; cursor: pointer;
-  color: #6e7681; font-size: 11px; line-height: 1;
-  padding: 2px 4px; border-radius: 3px;
+  color: #6e7681; font-size: 16px; line-height: 1;
+  padding: 2px 8px; border-radius: 4px;
 }
 .expand-all-btn:hover { color: #c9d1d9; background: #21262d; }
 .expand-all-btn.open { color: #58a6ff; }
