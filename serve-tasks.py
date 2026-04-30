@@ -324,7 +324,7 @@ tr.row-highlight > td { background: rgba(56, 139, 253, 0.08) !important; }
 }
 #help td { padding: 5px 0; border: 0; vertical-align: middle; }
 #help td:first-child { color: #8b949e; padding-right: 14px; }
-#help td:last-child { width: 1%; white-space: nowrap; text-align: right; }
+#help td:last-child { width: 1%; white-space: nowrap; text-align: left; }
 #help kbd {
   font-family: ui-monospace, monospace;
   background: #21262d; color: #58a6ff;
