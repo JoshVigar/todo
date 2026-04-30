@@ -323,9 +323,9 @@ def test_help_overlay_lists_all_documented_hotkeys(data):
     they're silently undiscoverable."""
     html = st.build_page(data, view="dashboard")
     assert 'id="help-overlay"' in html
-    # Each hotkey must appear in the help table
-    for label in ["x", "r", "s", "a", "c", "Enter", "Shift+S", "Shift+P", "Shift+1/2/3", "?"]:
-        assert label in html, f"hotkey {label!r} missing from help overlay"
+    # Each hotkey appears as its own <kbd>…</kbd>
+    for kbd in ["x", "r", "s", "a", "c", "j", "k", "Enter", "Shift", "S", "P", "1", "2", "3", "Esc", "?"]:
+        assert f"<kbd>{kbd}</kbd>" in html, f"hotkey <kbd>{kbd}</kbd> missing from help overlay"
 
 
 def test_post_helper_refreshes_after_response(data):
