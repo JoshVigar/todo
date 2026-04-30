@@ -318,9 +318,12 @@ tr.row-highlight > td { background: rgba(56, 139, 253, 0.08) !important; }
   font-size: 13px;
 }
 #help h3 { font-size: 14px; margin-bottom: 14px; color: #e6edf3; }
-#help table { width: 100%; border-collapse: collapse; line-height: 1.6; }
+#help table {
+  width: 100%; border-collapse: collapse;
+  line-height: 1.6; table-layout: auto;  /* override global fixed layout */
+}
 #help td { padding: 5px 0; border: 0; vertical-align: middle; }
-#help td:first-child { width: 1px; padding-right: 14px; white-space: nowrap; }
+#help td:first-child { width: 1%; padding-right: 14px; white-space: nowrap; }
 #help td:last-child { color: #8b949e; }
 #help kbd {
   font-family: ui-monospace, monospace;
