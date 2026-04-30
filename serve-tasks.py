@@ -133,20 +133,29 @@ def _state_signature():
     return (json_m, src_m, core_m)
 
 
+def _bump_state_version():
+    """Increment the SSE state version and wake every waiting client.
+    Call this from any code path that mutates a watched file directly so
+    we don't wait for the next polling tick."""
+    global _state_version
+    with _state_cond:
+        _state_version += 1
+        _state_cond.notify_all()
+
+
 def _watch_state():
-    """Bump `_state_version` and notify when mtimes change. ~50ms poll → ~50ms
-    end-to-end latency from a write to the browser DOM update via SSE."""
+    """Catch *external* mutations (tk rebuilds, manual core-file edits) at
+    a sleepy poll interval. Server's own writes call `_bump_state_version`
+    directly so they push instantly without us watching."""
     global _state_version
     last = _state_signature()
     while True:
-        time.sleep(0.05)
+        time.sleep(2.0)
         sig = _state_signature()
         if sig is None or sig == last:
             continue
         last = sig
-        with _state_cond:
-            _state_version += 1
-            _state_cond.notify_all()
+        _bump_state_version()
 
 
 if not os.environ.get("SERVE_TASKS_NO_WATCH"):
@@ -2295,9 +2304,12 @@ def _load_state():
 
 
 def _save_state(data, now=None):
-    """Stamp `updated` and persist `data` to tasks-live.json."""
+    """Stamp `updated` and persist `data` to tasks-live.json. Notifies SSE
+    clients directly so click-driven mutations push instantly without
+    waiting for the polling watcher."""
     data["updated"] = (now or datetime.datetime.now()).strftime("%Y-%m-%d %H:%M")
     JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _bump_state_version()
 
 
 def _apply_cross_section_effects(src_task, src_title, tgt_title, now, week=None):
