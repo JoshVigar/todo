@@ -323,8 +323,8 @@ tr.row-highlight > td { background: rgba(56, 139, 253, 0.08) !important; }
   line-height: 1.6; table-layout: auto;  /* override global fixed layout */
 }
 #help td { padding: 5px 0; border: 0; vertical-align: middle; }
-#help td:first-child { width: 1%; padding-right: 14px; white-space: nowrap; }
-#help td:last-child { color: #8b949e; }
+#help td:first-child { color: #8b949e; padding-right: 14px; }
+#help td:last-child { width: 1%; white-space: nowrap; text-align: right; }
 #help kbd {
   font-family: ui-monospace, monospace;
   background: #21262d; color: #58a6ff;
@@ -1761,20 +1761,20 @@ def build_page(data, view="dashboard"):
         f'<div id="help-overlay"><div id="help">'
         f'<h3>Keyboard shortcuts</h3>'
         f'<table>'
-        f'<tr><td><kbd>x</kbd></td><td>Expand / collapse all detail panels</td></tr>'
-        f'<tr><td><kbd>r</kbd></td><td>Refresh the view</td></tr>'
-        f'<tr><td><kbd>s</kbd></td><td>Sort tasks by priority</td></tr>'
-        f'<tr><td><kbd>a</kbd></td><td>Open Add task modal</td></tr>'
-        f'<tr><td><kbd>c</kbd></td><td>Toggle dashboard / classic view</td></tr>'
-        f'<tr><td><kbd>j</kbd> <kbd>↓</kbd></td><td>Highlight next row</td></tr>'
-        f'<tr><td><kbd>k</kbd> <kbd>↑</kbd></td><td>Highlight previous row</td></tr>'
-        f'<tr><td><kbd>Enter</kbd></td><td>Expand / collapse highlighted row</td></tr>'
-        f'<tr><td><kbd>Shift</kbd>+<kbd>S</kbd></td><td>Cycle status of highlighted row</td></tr>'
-        f'<tr><td><kbd>Shift</kbd>+<kbd>P</kbd></td><td>Cycle priority of highlighted row</td></tr>'
-        f'<tr><td><kbd>Shift</kbd>+<kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd></td>'
-        f'<td>Jump to Focus / High / Lower</td></tr>'
-        f'<tr><td><kbd>Esc</kbd></td><td>Close modal · collapse all · clear menu</td></tr>'
-        f'<tr><td><kbd>?</kbd></td><td>Show this help</td></tr>'
+        f'<tr><td>Expand / collapse all detail panels</td><td><kbd>x</kbd></td></tr>'
+        f'<tr><td>Refresh the view</td><td><kbd>r</kbd></td></tr>'
+        f'<tr><td>Sort tasks by priority</td><td><kbd>s</kbd></td></tr>'
+        f'<tr><td>Open Add task modal</td><td><kbd>a</kbd></td></tr>'
+        f'<tr><td>Toggle dashboard / classic view</td><td><kbd>c</kbd></td></tr>'
+        f'<tr><td>Highlight next row</td><td><kbd>j</kbd> <kbd>↓</kbd></td></tr>'
+        f'<tr><td>Highlight previous row</td><td><kbd>k</kbd> <kbd>↑</kbd></td></tr>'
+        f'<tr><td>Expand / collapse highlighted row</td><td><kbd>Enter</kbd></td></tr>'
+        f'<tr><td>Cycle status of highlighted row</td><td><kbd>Shift</kbd>+<kbd>S</kbd></td></tr>'
+        f'<tr><td>Cycle priority of highlighted row</td><td><kbd>Shift</kbd>+<kbd>P</kbd></td></tr>'
+        f'<tr><td>Jump to Focus / High / Lower</td>'
+        f'<td><kbd>Shift</kbd>+<kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd></td></tr>'
+        f'<tr><td>Close modal · collapse all · clear menu</td><td><kbd>Esc</kbd></td></tr>'
+        f'<tr><td>Show this help</td><td><kbd>?</kbd></td></tr>'
         f'</table>'
         f'<button id="help-close">Close</button>'
         f'</div></div>'
