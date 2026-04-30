@@ -355,6 +355,21 @@ def test_filter_input_present_with_hotkey_and_clear(data):
     assert ".filtered-out { display: none !important; }" in html
 
 
+def test_filter_hides_cards_with_no_matches(data):
+    """When filtering, a `.task-card` whose every task row gets the
+    `.filtered-out` class should itself be hidden — empty cards add visual
+    noise without showing anything."""
+    html = st.build_page(data, view="dashboard")
+    # The filter logic must check `.task-card` membership and toggle
+    # filtered-out based on whether any task row inside is still visible.
+    assert ".task-card" in html and "card.classList.toggle('filtered-out'" in html, (
+        "filter logic doesn't hide empty cards"
+    )
+    assert ":not(.filtered-out)" in html, (
+        "filter visibility check should exclude already-hidden rows"
+    )
+
+
 def test_filter_reapplied_after_dom_swap(data):
     """_refreshTasks must call _applyFilter so a typed filter survives
     the SSE/poll-driven DOM swap."""

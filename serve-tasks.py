@@ -655,6 +655,14 @@ function _applyFilter() {
       nxt.classList.toggle('filtered-out', hide);
     }
   });
+  // Hide whole cards (sections) with no visible matches while filtering.
+  document.querySelectorAll('.task-card').forEach(function(card) {
+    if (!q) { card.classList.remove('filtered-out'); return; }
+    var visible = card.querySelectorAll(
+      'tr[draggable="true"]:not(.filtered-out), .cmp-row[data-id]:not(.filtered-out)'
+    );
+    card.classList.toggle('filtered-out', visible.length === 0);
+  });
 }
 (function() {
   var input = document.getElementById('task-filter');
