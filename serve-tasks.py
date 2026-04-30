@@ -810,6 +810,14 @@ function closeModal() {
   document.getElementById('modal-overlay').classList.remove('open');
 }
 document.getElementById('modal-cancel').addEventListener('click', closeModal);
+// Cmd+Enter (or Ctrl+Enter) inside the Add modal triggers Save —
+// usual pattern in chat / form apps so users don't have to mouse-click.
+document.getElementById('modal-overlay').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    document.getElementById('modal-save').click();
+  }
+});
 document.getElementById('modal-overlay').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
 });
@@ -1860,6 +1868,7 @@ def build_page(data, view="dashboard"):
         f'<tr><td>Refresh the view</td><td><kbd>r</kbd></td></tr>'
         f'<tr><td>Sort tasks by priority</td><td><kbd>s</kbd></td></tr>'
         f'<tr><td>Open Add task modal</td><td><kbd>a</kbd></td></tr>'
+        f'<tr><td>Submit Add modal</td><td><kbd>⌘</kbd>+<kbd>Enter</kbd></td></tr>'
         f'<tr><td>Toggle dashboard / classic view</td><td><kbd>c</kbd></td></tr>'
         f'<tr><td>Focus filter input</td><td><kbd>/</kbd></td></tr>'
         f'<tr><td>Highlight next row</td><td><kbd>j</kbd> <kbd>↓</kbd></td></tr>'
