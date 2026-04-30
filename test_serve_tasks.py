@@ -318,13 +318,94 @@ def test_hotkeys_present_with_required_guards(data):
     assert "INPUT" in html and "TEXTAREA" in html
 
 
+def test_focus_progress_subtitle_renders(data):
+    """Today's Focus header carries `N of M` once any focus task is done."""
+    # Mark the existing completed task as having come from Today's Focus
+    data["completed_today"][0]["from_section"] = "Today's Focus"
+    html = st.build_page(data, view="dashboard")
+    assert "section-subtitle" in html
+    # 1 active focus + 1 completed-from-focus = 1 of 2
+    assert ">· 1 of 2<" in html, "expected '· 1 of 2' subtitle on Today's Focus"
+
+
+def test_focus_progress_omitted_when_no_focus_section(data):
+    """If there's no Today's Focus section, no progress subtitle renders."""
+    data["sections"] = [s for s in data["sections"] if s["title"] != "Today's Focus"]
+    assert st._focus_progress(data) == ""
+
+
+def test_focus_progress_omitted_when_total_zero(data):
+    """Empty focus section + no focus completions → no subtitle text."""
+    focus = next(s for s in data["sections"] if s["title"] == "Today's Focus")
+    focus["tasks"] = []
+    data["completed_today"] = []
+    assert st._focus_progress(data) == ""
+
+
+def test_filter_input_present_with_hotkey_and_clear(data):
+    """The filter input + the JS to apply it + the / and Esc keybinds."""
+    html = st.build_page(data, view="dashboard")
+    assert 'id="task-filter"' in html
+    assert "function _applyFilter()" in html
+    # / focuses the filter
+    assert "e.key === '/'" in html
+    # Esc clears the filter when it has focus or content
+    assert "fi2.value = ''" in html
+    # filtered-out CSS rule hides matching rows
+    assert ".filtered-out { display: none !important; }" in html
+
+
+def test_filter_reapplied_after_dom_swap(data):
+    """_refreshTasks must call _applyFilter so a typed filter survives
+    the SSE/poll-driven DOM swap."""
+    html = st.build_page(data, view="dashboard")
+    # _applyFilter() should appear inside the _refreshTasks function body
+    body_start = html.find("function _refreshTasks(")
+    body_end = html.find("\n}", body_start)
+    body = html[body_start:body_end + 2]
+    assert "_applyFilter()" in body, (
+        "_applyFilter not called inside _refreshTasks — filter would reset on every refresh"
+    )
+
+
+def test_counts_strip_renders_when_data_present(data):
+    """The counts strip should render priority dots, status icons,
+    and a done-today tally when there's relevant data."""
+    html = st.build_page(data, view="dashboard")
+    assert 'class="counts-strip"' in html
+    # Priority dots: at least one .pri-dot rendered for fixture (P1, P2, P3, P4 all present)
+    assert "pri-dot" in html or "cnt-group" in html
+    # Status counts shown for in_progress / waiting / blocked when present
+    assert any(label in html for label in ["🔄", "⏳", "🚫"])
+
+
+def test_expand_all_button_only_in_card_with_expandable_content(data):
+    """The expand-all chevron must only appear in section-headers whose
+    section actually has rows-with-detail. Verifies we don't put a useless
+    chevron on the goalie section, sparkline, etc."""
+    # Goalie section has no whys + no detail panels → no chevron
+    data.setdefault("sections", []).append({
+        "title": "Goalie",
+        "type": "goalie",
+        "tasks": [{"id": 999, "task": "ping triage queue", "links": [], "status": "open"}],
+    })
+    html = st.build_page(data, view="dashboard")
+    # Find the Goalie section header chunk
+    idx = html.find("Goalie")
+    assert idx != -1, "goalie header missing"
+    # The first 200 chars after the header shouldn't contain a chevron
+    assert 'data-action="expand-all"' not in html[idx:idx + 200], (
+        "expand-all button should not appear on goalie section"
+    )
+
+
 def test_help_overlay_lists_all_documented_hotkeys(data):
     """The ? help overlay should list every hotkey we wire — otherwise
     they're silently undiscoverable."""
     html = st.build_page(data, view="dashboard")
     assert 'id="help-overlay"' in html
     # Each hotkey appears as its own <kbd>…</kbd>
-    for kbd in ["x", "r", "s", "a", "c", "j", "k", "Enter", "Shift", "S", "P", "1", "2", "3", "Esc", "?"]:
+    for kbd in ["x", "r", "s", "a", "c", "/", "j", "k", "Enter", "Shift", "S", "P", "1", "2", "3", "Esc", "?"]:
         assert f"<kbd>{kbd}</kbd>" in html, f"hotkey <kbd>{kbd}</kbd> missing from help overlay"
 
 

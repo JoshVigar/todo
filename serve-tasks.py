@@ -292,6 +292,18 @@ tr.row-progress td { background: rgba(56, 139, 253, 0.05); }
 tr.row-due-soon td { background: rgba(230, 179, 65, 0.07); }
 tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
 .section-header { display: flex; align-items: center; justify-content: space-between; }
+.section-subtitle {
+  margin-left: 8px; font-size: 11px; font-weight: 500;
+  color: #8b949e; letter-spacing: 0.02em; text-transform: none;
+}
+#task-filter {
+  flex: 1; max-width: 280px; margin-left: auto;
+  background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+  color: #e6edf3; padding: 4px 10px; font-size: 12px;
+  font-family: inherit;
+}
+#task-filter:focus { outline: none; border-color: #58a6ff; }
+.filtered-out { display: none !important; }
 .expand-all-btn {
   background: transparent; border: 0; cursor: pointer;
   color: #6e7681; font-size: 32px; line-height: 1;
@@ -625,6 +637,30 @@ function _post(url, payload) {
   }).then(function(r) { _refreshTasks(true); return r; });
 }
 
+// Filter visible tasks by substring match against task name.
+// Re-runs on every input event and after every DOM swap so the filter
+// survives SSE pushes and click-driven refreshes.
+function _applyFilter() {
+  var input = document.getElementById('task-filter');
+  if (!input) return;
+  var q = input.value.trim().toLowerCase();
+  var rows = document.querySelectorAll('tr[draggable="true"], .cmp-row[data-id]');
+  rows.forEach(function(row) {
+    var nameEl = row.querySelector('.task-cell, .cmp-task');
+    var text = (nameEl ? nameEl.textContent : row.textContent).toLowerCase();
+    var hide = q && text.indexOf(q) === -1;
+    row.classList.toggle('filtered-out', hide);
+    var nxt = row.nextElementSibling;
+    if (nxt && (nxt.classList.contains('row-detail') || nxt.classList.contains('cmp-detail'))) {
+      nxt.classList.toggle('filtered-out', hide);
+    }
+  });
+}
+(function() {
+  var input = document.getElementById('task-filter');
+  if (input) input.addEventListener('input', _applyFilter);
+})();
+
 // Toggle every expandable row in `scope` (defaults to whole document).
 // If anything is collapsed, expand all; if everything is already expanded,
 // collapse all. Syncs every expand-all chevron in scope to match.
@@ -883,6 +919,8 @@ function _refreshTasks(force) {
       });
       // Re-apply keyboard-nav highlight if it survived the swap
       if (_hilitId != null) _setHighlight(_hilitId);
+      // Preserve the active filter across refreshes
+      _applyFilter();
     }
     var freshStyle = doc.querySelector('style');
     if (freshStyle) {
@@ -1016,14 +1054,17 @@ document.addEventListener('keydown', function(e) {
   if (!document.hasFocus()) return;
   var modal = document.getElementById('modal-overlay');
   var help = document.getElementById('help-overlay');
-  // ? always opens help even when modal is closed; Esc closes any overlay
-  if (e.key === '?') {
-    e.preventDefault();
-    _showHelp();
-    return;
-  }
+  var t = document.activeElement;
+  var inInput = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                      t.tagName === 'SELECT' || t.isContentEditable);
+
+  // Esc always handled — closes overlays / clears filter
   if (e.key === 'Escape') {
     if (help && help.classList.contains('open')) { _closeHelp(); return; }
+    var fi2 = document.getElementById('task-filter');
+    if (fi2 && (t === fi2 || fi2.value)) {
+      fi2.value = ''; fi2.blur(); _applyFilter(); return;
+    }
     // (modal Escape and ctx-menu Escape are handled by their own listeners)
     // Collapse all expanded rows on Esc when no overlay is open
     document.querySelectorAll('tr.expanded, .cmp-row.expanded').forEach(function(r) {
@@ -1038,12 +1079,20 @@ document.addEventListener('keydown', function(e) {
     });
     return;
   }
-  // Suppress hotkeys while any modal-style overlay is open
+
+  // ? opens help; / focuses filter — only when not typing somewhere
+  if (e.key === '?' && !inInput) {
+    e.preventDefault(); _showHelp(); return;
+  }
+  if (e.key === '/' && !inInput) {
+    var fi = document.getElementById('task-filter');
+    if (fi) { e.preventDefault(); fi.focus(); fi.select(); return; }
+  }
+
+  // Suppress remaining hotkeys while any modal-style overlay is open or input focused
   if (modal && modal.classList.contains('open')) return;
   if (help && help.classList.contains('open')) return;
-  var t = document.activeElement;
-  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
-            t.tagName === 'SELECT' || t.isContentEditable)) return;
+  if (inInput) return;
 
   // Section jumps (use e.code so it's layout-independent)
   if (e.shiftKey) {
@@ -1129,19 +1178,37 @@ def h(text):
             .replace('"', "&quot;"))
 
 
-def _section_header(label, color, *, expandable=False):
+def _section_header(label, color, *, expandable=False, subtitle=""):
     """Standard section header bar with the section's accent colour.
     If `expandable=True`, append a chevron toggle that expands/collapses
-    every detail panel in the following section."""
+    every detail panel in the following section. If `subtitle` is set,
+    render it next to the label (used for Today's Focus progress)."""
     btn = (
         '<button class="expand-all-btn" data-action="expand-all" '
         'title="Expand / collapse all">▾</button>'
         if expandable else ""
     )
+    sub = f'<span class="section-subtitle">· {h(subtitle)}</span>' if subtitle else ""
     return (
         f'<div class="section-header" style="border-left-color:{color}">'
-        f'{h(label)}{btn}</div>\n'
+        f'<span class="section-label">{h(label)}{sub}</span>{btn}</div>\n'
     )
+
+
+def _focus_progress(data):
+    """`N of M` for Today's Focus: M = currently focused + ever-focused-and-done
+    today, N = the done part."""
+    focus = next((s for s in data.get("sections", []) if s.get("title") == SEC_FOCUS), None)
+    if focus is None:
+        return ""
+    done = sum(
+        1 for t in data.get("completed_today", [])
+        if t.get("from_section") == SEC_FOCUS
+    )
+    total = len(focus.get("tasks", [])) + done
+    if total == 0:
+        return ""
+    return f"{done} of {total}"
 
 def format_age(from_week, current_week, added=None):
     """Show task age. Uses 'added' date (days) if available, falls back to week diff."""
@@ -1236,7 +1303,7 @@ def section_color(title):
 # Rendering
 # ---------------------------------------------------------------------------
 
-def render_core_section(title, tasks, week):
+def render_core_section(title, tasks, week, subtitle=""):
     if not tasks:
         return ""
     color = section_color(title)
@@ -1289,7 +1356,7 @@ def render_core_section(title, tasks, week):
         '<th style="width:120px">Status</th>',
     ]
     return (
-        _section_header(label, color, expandable=any_why)
+        _section_header(label, color, expandable=any_why, subtitle=subtitle)
         + f'<table><thead><tr>{"".join(headers)}</tr></thead><tbody>\n'
         + "\n".join(rows)
         + "\n</tbody></table>\n"
@@ -1639,9 +1706,13 @@ def _build_dashboard_body(data, week):
     CARD_VARIANTS = {SEC_FOCUS: "focus", SEC_HIGH: "high-priority"}
     sections_by_title = {s.get("title"): s for s in data.get("sections", []) if s.get("type") != "goalie"}
 
+    focus_sub = _focus_progress(data)
     left_html = "".join(
         card(
-            render_core_section(title, sections_by_title[title].get("tasks", []), week),
+            render_core_section(
+                title, sections_by_title[title].get("tasks", []), week,
+                subtitle=focus_sub if title == SEC_FOCUS else "",
+            ),
             variant=CARD_VARIANTS.get(title, ""),
         )
         for title in LEFT if title in sections_by_title
@@ -1680,6 +1751,7 @@ def _build_classic_body(data, week):
         return f'<div class="{cls}">{html}</div>'
 
     CARD_VARIANTS = {SEC_FOCUS: "focus", SEC_HIGH: "high-priority"}
+    focus_sub = _focus_progress(data)
     for section in data.get("sections", []):
         stype = section.get("type", "core")
         title = section.get("title", "")
@@ -1687,7 +1759,11 @@ def _build_classic_body(data, week):
         if stype == "goalie":
             parts.append(card(render_goalie_section(title, tasks)))
         else:
-            parts.append(card(render_core_section(title, tasks, week), variant=CARD_VARIANTS.get(title, "")))
+            sub = focus_sub if title == SEC_FOCUS else ""
+            parts.append(card(
+                render_core_section(title, tasks, week, subtitle=sub),
+                variant=CARD_VARIANTS.get(title, ""),
+            ))
     completed_html = render_completed(data.get("completed_today", []))
     if completed_html:
         parts.append(card(completed_html))
@@ -1710,6 +1786,8 @@ def _view_switcher_html(current, week=""):
         f'<div id="topbar">'
         f'{week_title}'
         f'<div id="view-switcher">{items}</div>'
+        f'<input id="task-filter" type="text" placeholder="Filter tasks ( / )" '
+        f'autocomplete="off" spellcheck="false">'
         f'</div>'
     )
 
@@ -1766,6 +1844,7 @@ def build_page(data, view="dashboard"):
         f'<tr><td>Sort tasks by priority</td><td><kbd>s</kbd></td></tr>'
         f'<tr><td>Open Add task modal</td><td><kbd>a</kbd></td></tr>'
         f'<tr><td>Toggle dashboard / classic view</td><td><kbd>c</kbd></td></tr>'
+        f'<tr><td>Focus filter input</td><td><kbd>/</kbd></td></tr>'
         f'<tr><td>Highlight next row</td><td><kbd>j</kbd> <kbd>↓</kbd></td></tr>'
         f'<tr><td>Highlight previous row</td><td><kbd>k</kbd> <kbd>↑</kbd></td></tr>'
         f'<tr><td>Expand / collapse highlighted row</td><td><kbd>Enter</kbd></td></tr>'
