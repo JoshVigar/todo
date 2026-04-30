@@ -302,6 +302,35 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
 td.task-cell { cursor: pointer; }
 td.task-cell:hover { color: #58a6ff; }
 tr.expanded td.task-cell { color: #58a6ff; }
+tr.row-highlight > td:first-child, .cmp-row.row-highlight {
+  box-shadow: inset 3px 0 0 #58a6ff;
+}
+tr.row-highlight > td { background: rgba(56, 139, 253, 0.08) !important; }
+.cmp-row.row-highlight { background: rgba(56, 139, 253, 0.08); }
+#help-overlay {
+  display: none; position: fixed; inset: 0; z-index: 100;
+  background: rgba(0,0,0,0.6); align-items: center; justify-content: center;
+}
+#help-overlay.open { display: flex; }
+#help {
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 24px 28px; min-width: 360px; max-width: 96vw;
+  font-size: 13px;
+}
+#help h3 { font-size: 14px; margin-bottom: 14px; color: #e6edf3; }
+#help table { width: 100%; border-collapse: collapse; }
+#help td { padding: 4px 12px 4px 0; border: 0; vertical-align: middle; }
+#help td.k {
+  font-family: ui-monospace, monospace;
+  background: #21262d; color: #58a6ff;
+  padding: 2px 8px; border-radius: 4px;
+  white-space: nowrap; width: 1px;
+}
+#help td.d { color: #8b949e; }
+#help-close {
+  margin-top: 14px; background: #238636; border: 0; color: #fff;
+  padding: 5px 14px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}
 tr.row-detail { display: none; }
 tr.row-detail > td {
   padding: 6px 12px 8px 40px;
@@ -846,6 +875,8 @@ function _refreshTasks(force) {
         var row = document.querySelector('tr[draggable="true"][data-id="' + id + '"]');
         if (row) row.classList.add('expanded');
       });
+      // Re-apply keyboard-nav highlight if it survived the swap
+      if (_hilitId != null) _setHighlight(_hilitId);
     }
     var freshStyle = doc.querySelector('style');
     if (freshStyle) {
@@ -917,30 +948,143 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') document.getElementById('ctx-menu').classList.remove('open');
 });
 
-// Single-letter hotkeys: x=expand-all, r=refresh, s=sort, a=add task.
-// Fire only when the page has focus, no modal is open, no input is focused,
-// and no modifier keys are held (so Cmd+R / Cmd+A still work as expected).
+// Row highlight (keyboard navigation). _hilitId tracks the currently
+// highlighted task by stable id so it survives DOM swaps via _refreshTasks.
+var _hilitId = null;
+function _highlightableRows() {
+  return document.querySelectorAll('tr[draggable="true"], .cmp-row[data-id]');
+}
+function _setHighlight(id) {
+  document.querySelectorAll('.row-highlight').forEach(function(r) {
+    r.classList.remove('row-highlight');
+  });
+  _hilitId = null;
+  if (id == null) return;
+  var rows = _highlightableRows();
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i].dataset.id) === String(id)) {
+      rows[i].classList.add('row-highlight');
+      rows[i].scrollIntoView({block: 'nearest'});
+      _hilitId = id;
+      return;
+    }
+  }
+}
+function _moveHighlight(dir) {
+  var rows = _highlightableRows();
+  if (!rows.length) return;
+  var idx = -1;
+  if (_hilitId != null) {
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i].dataset.id) === String(_hilitId)) { idx = i; break; }
+    }
+  }
+  var next = idx === -1
+    ? (dir > 0 ? 0 : rows.length - 1)
+    : (idx + dir + rows.length) % rows.length;
+  _setHighlight(rows[next].dataset.id);
+}
+function _scrollToSection(needle) {
+  var headers = document.querySelectorAll('.section-header');
+  for (var i = 0; i < headers.length; i++) {
+    if (headers[i].textContent.toLowerCase().indexOf(needle.toLowerCase()) !== -1) {
+      headers[i].scrollIntoView({behavior: 'smooth', block: 'start'});
+      return;
+    }
+  }
+}
+
+// Help overlay open/close
+function _showHelp() { document.getElementById('help-overlay').classList.add('open'); }
+function _closeHelp() { document.getElementById('help-overlay').classList.remove('open'); }
+document.getElementById('help-close').addEventListener('click', _closeHelp);
+document.getElementById('help-overlay').addEventListener('click', function(e) {
+  if (e.target === this) _closeHelp();
+});
+
+// Hotkeys. Fire only when page is focused, no modal/help is open, no
+// input is focused, and no Meta/Ctrl/Alt is held (so Cmd+R / Cmd+A still work).
+// Shift IS allowed — Shift+S, Shift+P, Shift+1/2/3 are part of the scheme.
 document.addEventListener('keydown', function(e) {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (!document.hasFocus()) return;
   var modal = document.getElementById('modal-overlay');
+  var help = document.getElementById('help-overlay');
+  // ? always opens help even when modal is closed; Esc closes any overlay
+  if (e.key === '?') {
+    e.preventDefault();
+    _showHelp();
+    return;
+  }
+  if (e.key === 'Escape') {
+    if (help && help.classList.contains('open')) { _closeHelp(); return; }
+    // (modal Escape and ctx-menu Escape are handled by their own listeners)
+    // Collapse all expanded rows on Esc when no overlay is open
+    document.querySelectorAll('tr.expanded, .cmp-row.expanded').forEach(function(r) {
+      r.classList.remove('expanded');
+    });
+    document.querySelectorAll('.cmp-detail.open').forEach(function(d) {
+      d.classList.remove('open');
+    });
+    document.querySelectorAll('.expand-all-btn').forEach(function(b) {
+      b.textContent = '▾';
+      b.classList.remove('open');
+    });
+    return;
+  }
+  // Suppress hotkeys while any modal-style overlay is open
   if (modal && modal.classList.contains('open')) return;
+  if (help && help.classList.contains('open')) return;
   var t = document.activeElement;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
             t.tagName === 'SELECT' || t.isContentEditable)) return;
-  if (e.key === 'x') {
-    e.preventDefault();
-    _toggleExpandAll();
-  } else if (e.key === 'r') {
-    e.preventDefault();
-    _refreshTasks(true);
-  } else if (e.key === 's') {
-    e.preventDefault();
-    _post('/sort', {});
-  } else if (e.key === 'a') {
+
+  // Section jumps (use e.code so it's layout-independent)
+  if (e.shiftKey) {
+    if (e.code === 'Digit1') { e.preventDefault(); _scrollToSection("Today's Focus"); return; }
+    if (e.code === 'Digit2') { e.preventDefault(); _scrollToSection('High Priority'); return; }
+    if (e.code === 'Digit3') { e.preventDefault(); _scrollToSection('Lower Priority'); return; }
+    // Mutate highlighted row
+    if (e.code === 'KeyS' && _hilitId != null) {
+      e.preventDefault(); _post('/update', {id: parseInt(_hilitId)}); return;
+    }
+    if (e.code === 'KeyP' && _hilitId != null) {
+      e.preventDefault(); _post('/update-pri', {id: parseInt(_hilitId)}); return;
+    }
+    return;
+  }
+
+  // Single-letter / arrow hotkeys
+  if (e.key === 'x') { e.preventDefault(); _toggleExpandAll(); return; }
+  if (e.key === 'r') { e.preventDefault(); _refreshTasks(true); return; }
+  if (e.key === 's') { e.preventDefault(); _post('/sort', {}); return; }
+  if (e.key === 'a') {
     e.preventDefault();
     document.getElementById('modal-overlay').classList.add('open');
     setTimeout(function(){ document.getElementById('m-task').focus(); }, 50);
+    return;
+  }
+  if (e.key === 'c') {
+    e.preventDefault();
+    var u = new URL(window.location);
+    var cur = u.searchParams.get('view') || 'dashboard';
+    u.searchParams.set('view', cur === 'dashboard' ? 'classic' : 'dashboard');
+    window.location.href = u.toString();
+    return;
+  }
+  if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); _moveHighlight(1); return; }
+  if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); _moveHighlight(-1); return; }
+  if (e.key === 'Enter' && _hilitId != null) {
+    e.preventDefault();
+    var row = document.querySelector(
+      'tr[draggable="true"][data-id="' + _hilitId + '"], .cmp-row[data-id="' + _hilitId + '"]'
+    );
+    if (row) {
+      row.classList.toggle('expanded');
+      var nxt = row.nextElementSibling;
+      if (nxt && nxt.classList.contains('cmp-detail')) nxt.classList.toggle('open');
+    }
+    return;
   }
 });
 
@@ -1608,6 +1752,25 @@ def build_page(data, view="dashboard"):
         f'<button id="modal-cancel">Cancel</button>'
         f'<button id="modal-save">Add task</button>'
         f'</div></div></div>'
+        f'<div id="help-overlay"><div id="help">'
+        f'<h3>Keyboard shortcuts</h3>'
+        f'<table>'
+        f'<tr><td class="k">x</td><td class="d">Expand / collapse all detail panels</td></tr>'
+        f'<tr><td class="k">r</td><td class="d">Refresh the view</td></tr>'
+        f'<tr><td class="k">s</td><td class="d">Sort tasks by priority</td></tr>'
+        f'<tr><td class="k">a</td><td class="d">Open Add task modal</td></tr>'
+        f'<tr><td class="k">c</td><td class="d">Toggle dashboard / classic view</td></tr>'
+        f'<tr><td class="k">j ↓</td><td class="d">Highlight next row</td></tr>'
+        f'<tr><td class="k">k ↑</td><td class="d">Highlight previous row</td></tr>'
+        f'<tr><td class="k">Enter</td><td class="d">Expand / collapse highlighted row</td></tr>'
+        f'<tr><td class="k">Shift+S</td><td class="d">Cycle status of highlighted row</td></tr>'
+        f'<tr><td class="k">Shift+P</td><td class="d">Cycle priority of highlighted row</td></tr>'
+        f'<tr><td class="k">Shift+1/2/3</td><td class="d">Jump to Focus / High / Lower</td></tr>'
+        f'<tr><td class="k">Esc</td><td class="d">Close modal · collapse all · clear menu</td></tr>'
+        f'<tr><td class="k">?</td><td class="d">Show this help</td></tr>'
+        f'</table>'
+        f'<button id="help-close">Close</button>'
+        f'</div></div>'
         f'<div id="tooltip"></div>'
         f'<div id="ctx-menu">'
         f'<div class="ctx-header">Move to</div>'

@@ -297,21 +297,35 @@ def test_table_row_expand_suppressed_when_no_why(data):
 
 
 def test_hotkeys_present_with_required_guards(data):
-    """The single-letter hotkey block must guard against firing while a
-    modifier is held, the tab is unfocused, the add modal is open, or an
-    input is focused — otherwise it'd hijack Cmd+R, type-into-fields, etc."""
+    """All hotkeys are wired and the dispatch block guards against firing
+    while a modifier is held (Meta/Ctrl/Alt — Shift IS used), the tab is
+    unfocused, an overlay is open, or an input is focused."""
     html = st.build_page(data, view="dashboard")
-    # Hotkeys are wired
-    assert "_toggleExpandAll()" in html, "x hotkey not calling _toggleExpandAll"
-    assert "if (e.key === 'x')" in html
-    assert "if (e.key === 'r')" in html
-    assert "if (e.key === 's')" in html
-    assert "if (e.key === 'a')" in html
-    # Required guards
+    # Single-letter
+    for k in ['x', 'r', 's', 'a', 'c', 'j', 'k']:
+        assert f"e.key === '{k}'" in html, f"missing hotkey: {k}"
+    # Arrow + Enter + ?
+    assert "ArrowDown" in html and "ArrowUp" in html
+    assert "e.key === 'Enter'" in html
+    assert "e.key === '?'" in html
+    # Shift combos via e.code
+    for code in ['Digit1', 'Digit2', 'Digit3', 'KeyS', 'KeyP']:
+        assert f"e.code === '{code}'" in html, f"missing shift+{code}"
+    # Guards
     assert "metaKey" in html and "ctrlKey" in html and "altKey" in html
     assert "document.hasFocus()" in html
     assert "modal-overlay" in html and "classList.contains('open')" in html
     assert "INPUT" in html and "TEXTAREA" in html
+
+
+def test_help_overlay_lists_all_documented_hotkeys(data):
+    """The ? help overlay should list every hotkey we wire — otherwise
+    they're silently undiscoverable."""
+    html = st.build_page(data, view="dashboard")
+    assert 'id="help-overlay"' in html
+    # Each hotkey must appear in the help table
+    for label in ["x", "r", "s", "a", "c", "Enter", "Shift+S", "Shift+P", "Shift+1/2/3", "?"]:
+        assert label in html, f"hotkey {label!r} missing from help overlay"
 
 
 def test_post_helper_refreshes_after_response(data):
