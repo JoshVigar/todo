@@ -348,12 +348,50 @@ def test_filter_input_present_with_hotkey_and_clear(data):
     assert 'id="task-filter"' in html
     assert 'id="filter-clear"' in html
     assert "function _applyFilter()" in html
-    # / focuses the filter
+    # / opens the filter popup and focuses the input
     assert "e.key === '/'" in html
+    assert "_showFilterPopup()" in html
     # Esc clears all filters via _clearFilters
     assert "_clearFilters()" in html
     # filtered-out CSS rule hides matching rows
     assert ".filtered-out { display: none !important; }" in html
+
+
+def test_filter_input_lives_in_floating_popup(data):
+    """The filter input no longer takes topbar space — it sits inside
+    #filter-popup which is hidden until `/` opens it."""
+    html = st.build_page(data, view="dashboard")
+    # Popup wrapper exists and is hidden by default
+    assert 'id="filter-popup"' in html
+    assert "#filter-popup {" in html and "display: none" in html
+    # Input lives inside the popup, NOT inside #topbar
+    pop_idx = html.find('id="filter-popup"')
+    pop_close = html.find("</div>", pop_idx)
+    assert 'id="task-filter"' in html[pop_idx:pop_close + 6], (
+        "filter input should be inside #filter-popup"
+    )
+    # Topbar must not contain the filter input anymore
+    topbar_open = html.find('id="topbar"')
+    topbar_close = html.find("</div>", topbar_open)
+    # The first `</div>` after #topbar opens closes the topbar — but #topbar
+    # contains nested divs, so walk until balanced. Cheaper: just assert the
+    # filter input doesn't appear before #filter-popup.
+    fp_idx = html.find('id="filter-popup"')
+    ti_idx = html.find('id="task-filter"')
+    assert ti_idx > fp_idx, (
+        "filter input should appear AFTER #filter-popup wrapper, not in topbar"
+    )
+
+
+def test_filter_popup_toggles_via_hotkey_and_blur(data):
+    """`/` shows the popup; Esc on empty input + blur both hide it."""
+    html = st.build_page(data, view="dashboard")
+    assert "function _showFilterPopup()" in html
+    assert "function _hideFilterPopup()" in html
+    # Blur listener wired up
+    assert "addEventListener('blur', _hideFilterPopup)" in html
+    # Esc-on-empty path calls _hideFilterPopup
+    assert "_hideFilterPopup()" in html
 
 
 def test_pill_filter_attrs_present(data):
@@ -408,12 +446,24 @@ def test_topbar_pills_swapped_on_refresh(data):
     assert "querySelector('#topbar-pills')" in html, (
         "_refreshTasks should swap #topbar-pills"
     )
-    # And the swap happens before the #tasks-content swap (so filter input
-    # state — which lives in the same #topbar — isn't disturbed)
     pills_swap = html.find("querySelector('#topbar-pills')")
     content_swap = html.find("querySelector('#tasks-content')")
     assert 0 < pills_swap < content_swap, (
         "topbar-pills swap should appear before #tasks-content swap in the JS"
+    )
+
+
+def test_topbar_compacts_before_wrapping(data):
+    """Compaction breakpoints shrink topbar elements at narrow widths
+    before the flex-wrap fallback kicks in."""
+    html = st.build_page(data, view="dashboard")
+    # The 720px breakpoint trims week-title, view-switcher padding, and pill labels
+    assert "@media (max-width: 720px)" in html, (
+        "expected a 720px max-width breakpoint to shrink the topbar"
+    )
+    # And the 560px breakpoint compacts pills further
+    assert "@media (max-width: 560px)" in html, (
+        "expected a 560px breakpoint for tightest pill compaction"
     )
 
 

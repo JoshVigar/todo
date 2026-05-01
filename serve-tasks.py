@@ -365,10 +365,22 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
   margin-left: 8px; font-size: 11px; font-weight: 500;
   color: #8b949e; letter-spacing: 0.02em; text-transform: none;
 }
+/* Floating filter popup — only visible when user presses `/`. */
+#filter-popup {
+  display: none; position: fixed; top: 64px;
+  left: 50%; transform: translateX(-50%);
+  z-index: 50; align-items: center; gap: 8px;
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 8px 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.55);
+}
+#filter-popup.open { display: inline-flex; }
+#filter-popup .hint, #filter-popup .esc-hint {
+  color: #8b949e; font-size: 11px; font-family: inherit;
+  border: 1px solid #30363d; border-radius: 4px;
+  padding: 1px 6px; line-height: 1.4;
+}
 #task-filter {
-  /* Absorbs spare space — pushes the cluster right naturally without
-   * margin-left:auto, which interacts badly with flex-wrap. */
-  flex: 1 1 200px; max-width: 280px; min-width: 160px;
+  width: 280px; max-width: 60vw;
   background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
   color: #e6edf3; padding: 4px 10px; font-size: 12px;
   font-family: inherit;
@@ -593,6 +605,25 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 }
 #view-switcher .vs-btn:hover { color: #e6edf3; background: #21262d; text-decoration: none; }
 #view-switcher .vs-btn.active { background: #30363d; color: #e6edf3; }
+/* Aggressive compaction below ~720px so the topbar shrinks before wrapping.
+ * Order of squeeze: button labels gone (already at 900px) → tighten gaps →
+ * shrink week title, view-switcher, and pills. Wrap is the last resort. */
+@media (max-width: 720px) {
+  #topbar { gap: 8px; }
+  .week-title { font-size: 17px; margin-right: 0; }
+  #view-switcher { padding: 2px; }
+  #view-switcher .vs-btn { padding: 3px 8px; font-size: 11px; }
+  #sort-btn, #add-btn { padding: 5px 9px; }
+  #topbar-pills .cnt-group {
+    padding: 4px 8px; gap: 8px; font-size: 12px;
+  }
+  #topbar-pills .cnt-group .label { display: none; }
+  #topbar-pills .counts-strip { gap: 6px; }
+  #filter-clear { padding: 3px 7px; font-size: 10px; }
+}
+@media (max-width: 560px) {
+  #topbar-pills .cnt-group { padding: 3px 6px; gap: 6px; font-size: 11px; }
+}
 .counts-strip {
   display: flex; flex-wrap: wrap; gap: 8px;
   margin-bottom: 14px;
@@ -877,9 +908,23 @@ function _clearFilters() {
   _applyFilter();
 }
 
+function _showFilterPopup() {
+  var pop = document.getElementById('filter-popup');
+  if (pop) pop.classList.add('open');
+}
+function _hideFilterPopup() {
+  var pop = document.getElementById('filter-popup');
+  // Keep it open if the user has typed something — closing would hide that
+  // they're filtering. Only collapse on empty value.
+  var input = document.getElementById('task-filter');
+  if (pop && input && !input.value) pop.classList.remove('open');
+}
 (function() {
   var input = document.getElementById('task-filter');
-  if (input) input.addEventListener('input', _applyFilter);
+  if (input) {
+    input.addEventListener('input', _applyFilter);
+    input.addEventListener('blur', _hideFilterPopup);
+  }
 })();
 
 // Toggle every expandable row in `scope` (defaults to whole document).
@@ -1355,7 +1400,7 @@ document.addEventListener('keydown', function(e) {
 
   // Esc always handled — narrow rules so it does the least surprising thing:
   //   in filter input + has text  → clear the text (keep pills, keep focus)
-  //   in filter input + no text   → blur the input (keep pills)
+  //   in filter input + no text   → blur + close popup (keep pills)
   //   not in filter + any filter  → clear all filters
   //   else                        → collapse expanded rows
   if (e.key === 'Escape') {
@@ -1363,7 +1408,7 @@ document.addEventListener('keydown', function(e) {
     var fi2 = document.getElementById('task-filter');
     if (fi2 && t === fi2) {
       if (fi2.value) { fi2.value = ''; _applyFilter(); }
-      else { fi2.blur(); }
+      else { fi2.blur(); _hideFilterPopup(); }
       return;
     }
     if ((fi2 && fi2.value) || _pillFilters.size > 0) {
@@ -1391,7 +1436,7 @@ document.addEventListener('keydown', function(e) {
   }
   if (e.key === '/' && !inInput) {
     var fi = document.getElementById('task-filter');
-    if (fi) { e.preventDefault(); fi.focus(); fi.select(); return; }
+    if (fi) { e.preventDefault(); _showFilterPopup(); fi.focus(); fi.select(); return; }
   }
 
   // Suppress remaining hotkeys while any modal-style overlay is open or input focused
@@ -2137,8 +2182,12 @@ def _view_switcher_html(current, week="", pills_html=""):
         f'<button id="sort-btn" title="Sort by priority" aria-label="Sort by priority">'
         f'<span class="btn-icon">⇕</span><span class="btn-label">Sort</span></button>'
         f'</div>'
-        f'<input id="task-filter" type="text" placeholder="Filter tasks ( / )" '
+        f'</div>'
+        f'<div id="filter-popup" role="dialog" aria-label="Filter tasks">'
+        f'<span class="hint">/</span>'
+        f'<input id="task-filter" type="text" placeholder="Filter tasks…" '
         f'autocomplete="off" spellcheck="false">'
+        f'<span class="esc-hint">Esc</span>'
         f'</div>'
     )
 
@@ -2192,7 +2241,7 @@ def build_page(data, view="dashboard"):
         f'<tr><td>Open Add task modal</td><td><kbd>a</kbd></td></tr>'
         f'<tr><td>Submit Add modal</td><td><kbd>⌘</kbd>+<kbd>Enter</kbd></td></tr>'
         f'<tr><td>Toggle dashboard / classic view</td><td><kbd>c</kbd></td></tr>'
-        f'<tr><td>Focus filter input</td><td><kbd>/</kbd></td></tr>'
+        f'<tr><td>Open filter popup</td><td><kbd>/</kbd></td></tr>'
         f'<tr><td>Click topbar pill to filter (multi-select)</td><td>—</td></tr>'
         f'<tr><td>Highlight next row</td><td><kbd>j</kbd> <kbd>↓</kbd></td></tr>'
         f'<tr><td>Highlight previous row</td><td><kbd>k</kbd> <kbd>↑</kbd></td></tr>'
