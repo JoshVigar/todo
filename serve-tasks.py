@@ -369,7 +369,6 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
   /* Absorbs spare space — pushes the cluster right naturally without
    * margin-left:auto, which interacts badly with flex-wrap. */
   flex: 1 1 200px; max-width: 280px; min-width: 160px;
-  margin-left: auto;
   background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
   color: #e6edf3; padding: 4px 10px; font-size: 12px;
   font-family: inherit;
