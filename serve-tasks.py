@@ -905,8 +905,15 @@ function _clearFilters() {
 
 // Detects whether the #topbar has wrapped to a second row. Iteratively
 // applies .compact then .compact-tight to recover a single-row layout.
-// Driven by content (children's offsetTop), not viewport thresholds, so
-// it adapts to whatever combination of pills/badges happens to render.
+// Driven by content, not viewport thresholds, so it adapts to whatever
+// combination of pills/badges happens to render.
+//
+// IMPORTANT: do NOT compare children's offsetTop here. The topbar uses
+// `align-items: center`, which makes mixed-height children land at
+// different offsetTop values even on a single row (each child centered
+// within the row's max height). The reliable signal is whether any
+// child's rect sits BELOW the first child's rect — which can only
+// happen if it wrapped to a new row (row-gap > 0).
 var _compactingTopbar = false;
 function _autoCompactTopbar() {
   if (_compactingTopbar) return;
@@ -919,9 +926,12 @@ function _autoCompactTopbar() {
     topbar.classList.remove('compact', 'compact-tight');
     void topbar.offsetHeight;  // force layout flush after class reset
     function isWrapped() {
-      var t0 = children[0].offsetTop;
+      var firstBottom = children[0].getBoundingClientRect().bottom;
       for (var i = 1; i < children.length; i++) {
-        if (children[i].offsetTop !== t0) return true;
+        // 1px tolerance for sub-pixel rounding.
+        if (children[i].getBoundingClientRect().top >= firstBottom - 1) {
+          return true;
+        }
       }
       return false;
     }

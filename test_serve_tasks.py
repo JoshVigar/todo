@@ -453,6 +453,29 @@ def test_topbar_pills_swapped_on_refresh(data):
     )
 
 
+def test_autocompact_uses_rect_bottom_not_offsettop(data):
+    """Regression: under #topbar's `align-items: center`, same-row children
+    of different heights have DIFFERENT `offsetTop` values, so an offsetTop
+    comparison reports "wrapped" for every single-row layout — making the
+    topbar permanently compact. Wrap detection must use getBoundingClientRect
+    bottom-vs-top instead."""
+    html = st.build_page(data, view="dashboard")
+    fn_idx = html.find("function _autoCompactTopbar()")
+    assert fn_idx > 0, "_autoCompactTopbar function not found"
+    # Locate the function body. It ends just before the `window.addEventListener`
+    # registration on the line below the closing brace.
+    end_marker = "window.addEventListener('resize', _autoCompactTopbar)"
+    fn_end = html.find(end_marker, fn_idx)
+    body = html[fn_idx:fn_end]
+    assert "getBoundingClientRect" in body, (
+        "wrap detection should use rect.top vs first child's rect.bottom"
+    )
+    assert "offsetTop" not in body, (
+        "offsetTop comparisons break under align-items:center — "
+        "do not regress this back to the offsetTop-based check"
+    )
+
+
 def test_autocompact_runs_on_load_and_resize_and_refresh(data):
     """_autoCompactTopbar must wire into:
       • DOMContentLoaded — initial measurement after first paint
