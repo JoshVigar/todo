@@ -478,17 +478,21 @@ tr.expanded { background: rgba(56, 139, 253, 0.04); }
 a { color: #58a6ff; text-decoration: none; cursor: pointer; }
 a:hover { text-decoration: underline; }
 p.counts { margin: 6px 0; color: #8b949e; font-size: 12px; }
-#topbar-actions { display: inline-flex; gap: 6px; }
-#sort-btn, #add-btn {
-  background: #1c2128; border: 1px solid #30363d;
-  color: #e6edf3; padding: 4px 12px; border-radius: 6px;
-  cursor: pointer; font-size: 12px; font-weight: 600;
-  letter-spacing: 0.02em;
-  font-family: inherit;
+#topbar-actions {
+  display: inline-flex; gap: 8px;
+  margin-left: 16px;  /* breathing room separating actions from the view-switcher pill */
 }
-#sort-btn:hover, #add-btn:hover { background: #2d333b; border-color: #484f58; }
-#add-btn { color: #3fb950; }
-#add-btn:hover { background: rgba(63, 185, 80, 0.12); border-color: rgba(63, 185, 80, 0.5); }
+#sort-btn, #add-btn {
+  /* Match the view-switcher's outer height: 3px wrapper-pad + 4px btn-pad + ~14px line. */
+  background: #0d1117; border: 1px solid #30363d;
+  color: #c9d1d9; padding: 6px 14px; border-radius: 6px;
+  cursor: pointer; font-size: 12px; font-weight: 600;
+  letter-spacing: 0.02em; font-family: inherit;
+  line-height: 1; box-shadow: 0 1px 0 rgba(255,255,255,0.02) inset;
+}
+#sort-btn:hover, #add-btn:hover { background: #21262d; border-color: #484f58; color: #e6edf3; }
+#add-btn { color: #3fb950; border-color: rgba(63,185,80,0.35); }
+#add-btn:hover { background: rgba(63,185,80,0.12); border-color: rgba(63,185,80,0.6); color: #3fb950; }
 #modal-overlay {
   display: none; position: fixed; inset: 0; z-index: 100;
   background: rgba(0,0,0,0.6); align-items: center; justify-content: center;
