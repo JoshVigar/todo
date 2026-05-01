@@ -133,6 +133,9 @@ def _state_signature():
     return (json_m, src_m, core_m)
 
 
+_sse_clients = 0  # active /events stream count; protected by _state_cond
+
+
 def _bump_state_version():
     """Increment the SSE state version and wake every waiting client.
     Call this from any code path that mutates a watched file directly so
@@ -144,18 +147,20 @@ def _bump_state_version():
 
 
 def _watch_state():
-    """Catch *external* mutations (tk rebuilds, manual core-file edits) at
-    a sleepy poll interval. Server's own writes call `_bump_state_version`
-    directly so they push instantly without us watching."""
-    global _state_version
+    """Catch external mutations (tk rebuilds, manual core-file edits).
+    Sleeps indefinitely while no SSE clients are connected; once a client
+    arrives, polls every 2s. Server's own writes call `_bump_state_version`
+    directly, so this loop is only for changes we didn't make."""
     last = _state_signature()
     while True:
+        with _state_cond:
+            while _sse_clients == 0:
+                _state_cond.wait()  # zero clients = nothing to push to
         time.sleep(2.0)
         sig = _state_signature()
-        if sig is None or sig == last:
-            continue
-        last = sig
-        _bump_state_version()
+        if sig is not None and sig != last:
+            last = sig
+            _bump_state_version()
 
 
 if not os.environ.get("SERVE_TASKS_NO_WATCH"):
@@ -313,6 +318,26 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
 }
 #task-filter:focus { outline: none; border-color: #58a6ff; }
 .filtered-out { display: none !important; }
+#toast {
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+  background: #1c2128; border: 1px solid #30363d; border-radius: 8px;
+  color: #e6edf3; font-size: 13px; padding: 10px 16px;
+  display: none; align-items: center; gap: 12px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.4); z-index: 80;
+}
+#toast.open { display: inline-flex; }
+#toast .toast-msg { color: #c9d1d9; }
+#toast .toast-undo {
+  background: transparent; border: 1px solid #30363d; color: #58a6ff;
+  font-weight: 600; padding: 4px 12px; border-radius: 4px; cursor: pointer;
+  font-family: inherit; font-size: 12px;
+}
+#toast .toast-undo:hover { background: rgba(56, 139, 253, 0.12); border-color: #58a6ff; }
+#toast .toast-progress {
+  display: inline-block; height: 2px; background: #58a6ff; opacity: 0.6;
+  width: 60px; transition: width 5s linear;
+}
+#toast .toast-progress.run { width: 0; }
 .expand-all-btn {
   background: transparent; border: 0; cursor: pointer;
   color: #6e7681; font-size: 32px; line-height: 1;
@@ -323,6 +348,18 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
 td.task-cell { cursor: pointer; }
 td.task-cell:hover { color: #58a6ff; }
 tr.expanded td.task-cell { color: #58a6ff; }
+.rename-pencil {
+  display: inline-block; margin-left: 6px; color: #6e7681;
+  cursor: pointer; visibility: hidden; font-size: 11px;
+  user-select: none;
+}
+tr:hover .rename-pencil, .cmp-row:hover .rename-pencil { visibility: visible; }
+.rename-pencil:hover { color: #58a6ff; }
+.rename-input {
+  background: #0d1117; border: 1px solid #58a6ff; color: #e6edf3;
+  padding: 2px 6px; border-radius: 4px; width: 100%;
+  font: inherit;
+}
 tr.row-highlight > td:first-child, .cmp-row.row-highlight {
   box-shadow: inset 3px 0 0 #58a6ff;
 }
@@ -646,6 +683,32 @@ function _post(url, payload) {
   }).then(function(r) { _refreshTasks(true); return r; });
 }
 
+// Toast for undo-able actions. Shows for 5s; click Undo to fire `onUndo`.
+var _toastTimer = null;
+function _showToast(message, onUndo) {
+  var toast = document.getElementById('toast');
+  if (!toast) return;
+  toast.querySelector('.toast-msg').textContent = message;
+  var progress = toast.querySelector('.toast-progress');
+  progress.classList.remove('run');
+  toast.classList.add('open');
+  // Trigger CSS transition by toggling .run after a frame
+  requestAnimationFrame(function() {
+    requestAnimationFrame(function() { progress.classList.add('run'); });
+  });
+  var undoBtn = toast.querySelector('.toast-undo');
+  // Replace the button to remove any old listener
+  var fresh = undoBtn.cloneNode(true);
+  undoBtn.parentNode.replaceChild(fresh, undoBtn);
+  fresh.addEventListener('click', function() {
+    clearTimeout(_toastTimer);
+    toast.classList.remove('open');
+    onUndo();
+  });
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(function() { toast.classList.remove('open'); }, 5000);
+}
+
 // Filter visible tasks by substring match against task name.
 // Re-runs on every input event and after every DOM swap so the filter
 // survives SSE pushes and click-driven refreshes.
@@ -702,6 +765,47 @@ function _toggleExpandAll(scope) {
 }
 
 document.addEventListener('click', function(e) {
+  // Rename pencil — swap the task-name span for an <input>. Save on Enter
+  // or blur; cancel on Esc. Stops propagation so the row's expand toggle
+  // doesn't also fire.
+  var pencil = e.target.closest('[data-action="rename"]');
+  if (pencil) {
+    e.preventDefault();
+    e.stopPropagation();
+    var rowEl = pencil.closest('tr[data-id], .cmp-row[data-id]');
+    if (!rowEl) return;
+    var nameSpan = rowEl.querySelector('.task-name');
+    if (!nameSpan) return;
+    var current = nameSpan.textContent;
+    var taskId = parseInt(pencil.dataset.id);
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = current;
+    input.className = 'rename-input';
+    nameSpan.replaceWith(input);
+    pencil.style.display = 'none';
+    input.focus();
+    input.select();
+    var done = false;
+    function commit(save) {
+      if (done) return;
+      done = true;
+      var newName = input.value.trim();
+      if (save && newName && newName !== current) {
+        _post('/rename', {id: taskId, name: newName});
+      } else {
+        _refreshTasks(true);  // restore the row from server state
+      }
+    }
+    input.addEventListener('keydown', function(ev) {
+      ev.stopPropagation();  // don't trigger global hotkeys
+      if (ev.key === 'Enter') { ev.preventDefault(); commit(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); commit(false); }
+    });
+    input.addEventListener('blur', function() { commit(true); });
+    return;
+  }
+
   // Expand-all chevron in section headers — toggles every detail panel
   // in this section's task-card (or whatever wrapper holds the rows).
   var expandBtn = e.target.closest('[data-action="expand-all"]');
@@ -993,18 +1097,15 @@ document.addEventListener('contextmenu', function(e) {
 document.addEventListener('click', function(e) {
   var item = e.target.closest('#ctx-menu .ctx-item');
   if (item && !item.classList.contains('disabled') && _ctxTaskId !== null) {
-    var endpoint, payload;
+    var taskId = _ctxTaskId;
     if (item.dataset.action === 'cancel') {
-      endpoint = '/cancel';
-      payload = {id: _ctxTaskId};
+      _post('/cancel', {id: taskId});
+      _showToast('Task cancelled', function() { _post('/uncancel', {id: taskId}); });
     } else if (item.dataset.action === 'complete') {
-      endpoint = '/complete';
-      payload = {id: _ctxTaskId};
+      _post('/complete', {id: taskId});
     } else {
-      endpoint = '/move-section';
-      payload = {id: _ctxTaskId, section: item.dataset.section};
+      _post('/move-section', {id: taskId, section: item.dataset.section});
     }
-    _post(endpoint, payload);
     document.getElementById('ctx-menu').classList.remove('open');
     _ctxTaskId = null;
     return;
@@ -1352,7 +1453,8 @@ def render_core_section(title, tasks, week, subtitle=""):
         cells = [
             f'<td class="num" data-id="{task_id}">{task_id}</td>',
             f'<td>{render_pri(t.get("pri"), task_id)}</td>',
-            f'<td class="{task_cls}">{h(t.get("task",""))}</td>',
+            f'<td class="{task_cls}"><span class="task-name">{h(t.get("task",""))}</span>'
+            f'<span class="rename-pencil" title="Rename" data-action="rename" data-id="{task_id}">✎</span></td>',
             f'<td>{due_html}</td>',
             f'<td>{format_age(t.get("from"), week, t.get("added"))}</td>',
             f'<td>{render_links(t.get("links",[]))}</td>',
@@ -1380,6 +1482,9 @@ def render_core_section(title, tasks, week, subtitle=""):
         '<th style="width:90px">Link</th>',
         '<th style="width:120px">Status</th>',
     ]
+    # If no progress subtitle was passed (i.e. not Today's Focus), show count
+    if not subtitle and tasks:
+        subtitle = f"{len(tasks)}"
     return (
         _section_header(label, color, expandable=any_why, subtitle=subtitle)
         + f'<table><thead><tr>{"".join(headers)}</tr></thead><tbody>\n'
@@ -1406,7 +1511,8 @@ def render_compact_section(title, tasks, week):
             f'<div class="cmp-row {rc_class}" draggable="true" data-id="{task_id}">'
             f'<span class="cmp-id" data-id="{task_id}">{task_id}</span>'
             f'<span class="cmp-pri">{pri_emoji}</span>'
-            f'<span class="cmp-task">{h(t.get("task",""))}</span>'
+            f'<span class="cmp-task"><span class="task-name">{h(t.get("task",""))}</span>'
+            f'<span class="rename-pencil" title="Rename" data-action="rename" data-id="{task_id}">✎</span></span>'
             f'{due_html}'
             f'</div>'
         )
@@ -1429,7 +1535,7 @@ def render_compact_section(title, tasks, week):
             f'<div class="cmp-detail" data-id="{task_id}">{"".join(detail_parts)}</div>'
         )
     return (
-        _section_header(label, color, expandable=True)
+        _section_header(label, color, expandable=True, subtitle=f"{len(tasks)}")
         + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 
@@ -1438,6 +1544,8 @@ def compute_counts(data):
     pri = {"P1": 0, "P2": 0, "P3": 0, "P4": 0, "P5": 0}
     status = {"in_progress": 0, "waiting": 0, "blocked": 0}
     overdue = 0
+    stale = 0
+    today = datetime.date.today()
     for s in data.get("sections", []):
         for t in s.get("tasks", []):
             p = t.get("pri")
@@ -1448,11 +1556,18 @@ def compute_counts(data):
                 status[st] += 1
             if "⚠️" in (t.get("due") or ""):
                 overdue += 1
-    return pri, status, overdue, len(data.get("completed_today", []))
+            added = t.get("added")
+            if added:
+                try:
+                    if (today - datetime.date.fromisoformat(added)).days >= 14:
+                        stale += 1
+                except ValueError:
+                    pass
+    return pri, status, overdue, len(data.get("completed_today", [])), stale
 
 
 def render_counts_strip(data):
-    pri, status, overdue, done = compute_counts(data)
+    pri, status, overdue, done, stale = compute_counts(data)
     pri_colors = {"P1": "#f85149", "P2": "#f0883e", "P3": "#e3b341", "P4": "#79c0ff", "P5": "#8b949e"}
 
     groups = []
@@ -1477,6 +1592,10 @@ def render_counts_strip(data):
     if overdue:
         groups.append(f'<div class="cnt-group alert"><span class="stat"><span class="icon">⚠️</span>{overdue} overdue</span></div>')
 
+    # Stale (only show if any task ≥14 days old — ADHD-friendly drift detector)
+    if stale:
+        groups.append(f'<div class="cnt-group alert"><span class="stat"><span class="icon">🧹</span>{stale} stale</span></div>')
+
     # Done today (always show — small dopamine hit when it's >0)
     groups.append(f'<div class="cnt-group success"><span class="stat"><span class="icon">✅</span>{done} done today</span></div>')
 
@@ -1500,7 +1619,7 @@ def render_goalie_section(title, tasks):
             f'</tr>'
         )
     return (
-        _section_header(title, color)
+        _section_header(title, color, subtitle=f"{len(tasks)}")
         + '<table><thead><tr>'
         '<th style="width:2%">#</th>'
         '<th>Task</th>'
@@ -1527,7 +1646,7 @@ def render_completed(tasks):
             f'</tr>'
         )
     return (
-        _section_header("Completed today", color)
+        _section_header("Completed today", color, subtitle=f"{len(tasks)}")
         + '<table><thead><tr>'
         '<th style="width:2%">#</th>'
         '<th>Task</th>'
@@ -1705,7 +1824,7 @@ def render_compact_completed(tasks):
             f'<div class="cmp-detail" data-id="{task_id}">{"".join(detail_parts)}</div>'
         )
     return (
-        _section_header("Completed today", color, expandable=True)
+        _section_header("Completed today", color, expandable=True, subtitle=f"{len(tasks)}")
         + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 
@@ -1884,6 +2003,11 @@ def build_page(data, view="dashboard"):
         f'<button id="help-close">Close</button>'
         f'</div></div>'
         f'<div id="tooltip"></div>'
+        f'<div id="toast">'
+        f'<span class="toast-msg"></span>'
+        f'<span class="toast-progress"></span>'
+        f'<button class="toast-undo">Undo</button>'
+        f'</div>'
         f'<div id="ctx-menu">'
         f'<div class="ctx-header">Move to</div>'
         f'<div class="ctx-item" data-section="Today\u0027s Focus">Today\u0027s Focus</div>'
@@ -2259,6 +2383,22 @@ def apply_status_change(num, force_status=None):
     update_core_file(task_name, new_status, now, week=data.get("week"))
     return True
 
+# In-memory undo buffer for cancelled tasks. Keyed by task id; entries
+# expire after UNDO_WINDOW_S so the buffer can't grow unbounded.
+_undo_lock = threading.Lock()
+_recent_cancels = {}
+UNDO_WINDOW_S = 30
+
+
+def _record_cancel(task_id, snapshot):
+    with _undo_lock:
+        _recent_cancels[task_id] = snapshot
+        # Sweep expired entries
+        cutoff = time.time() - UNDO_WINDOW_S
+        for tid in [k for k, v in _recent_cancels.items() if v.get("at", 0) < cutoff]:
+            _recent_cancels.pop(tid, None)
+
+
 def apply_cancel(task_id):
     """Cancel a task: remove from active JSON, mark [/] in core file, move to ## Cancelled."""
     data = _load_state()
@@ -2274,6 +2414,14 @@ def apply_cancel(task_id):
     ts = now.strftime("%Y-%m-%d %H:%M")
     task_name = task.get("task", "")
     src_title = source_section.get("title")
+
+    # Snapshot for /uncancel before mutating anything
+    _record_cancel(task_id, {
+        "at": time.time(),
+        "task": dict(task),
+        "src_title": src_title,
+        "ts": ts,
+    })
 
     # Remove from JSON
     source_section["tasks"] = [t for t in source_section["tasks"] if t.get("id") != task_id]
@@ -2299,6 +2447,114 @@ def apply_cancel(task_id):
 
     _snapshot_focus_if_touched(data, src_title)
 
+    renumber_tasks(data)
+    _save_state(data, now)
+    return True
+
+
+def update_core_file_name(old_name, new_name, week=None):
+    """Rewrite the task-name slot of `old_name`'s active line to `new_name`,
+    preserving the state marker, priority emoji, and any trailing metadata
+    (` — due …`, ` (link)`, ` _(carried…)_`, ` _(why:…)_`)."""
+    core_path = current_core_path(week)
+    try:
+        lines = core_path.read_text().split("\n")
+    except FileNotFoundError:
+        return
+    done_section = _done_boundary(lines, len(lines))
+    i = find_task_line(lines, old_name, end_idx=done_section)
+    if i is None:
+        return
+    line = lines[i]
+    m = re.match(r"(\s*- \[.\]\s+)", line)
+    if not m:
+        return
+    rest = line[m.end():]
+    emoji_prefix = ""
+    for emoji in PRI_EMOJI.values():
+        if rest.startswith(emoji + " "):
+            emoji_prefix = emoji + " "
+            rest = rest[len(emoji) + 1:]
+            break
+    cut = _TASK_NAME_BOUNDARY.search(rest)
+    suffix = rest[cut.start():] if cut else ""
+    lines[i] = m.group(1) + emoji_prefix + new_name + suffix
+    core_path.write_text("\n".join(lines))
+
+
+def apply_rename(task_id, new_name):
+    """Rename a task's display name. Updates JSON `task` field and the
+    matching markdown line's name slot."""
+    new_name = (new_name or "").strip()
+    if not new_name:
+        return False
+    data = _load_state()
+    if data is None:
+        return False
+    task, _section = find_task_by_id(data, task_id)
+    if task is None:
+        return False
+    old_name = task.get("task", "")
+    if old_name == new_name:
+        return True  # no-op success
+    task["task"] = new_name
+    _save_state(data)
+    update_core_file_name(old_name, new_name, week=data.get("week"))
+    return True
+
+
+def apply_uncancel(task_id):
+    """Reverse the most recent /cancel for `task_id` if still in the undo window.
+    Restores the task to its original section in JSON and removes the [/]
+    line from `## Cancelled` in the core markdown."""
+    with _undo_lock:
+        rec = _recent_cancels.pop(task_id, None)
+    if rec is None or (time.time() - rec.get("at", 0)) > UNDO_WINDOW_S:
+        return False
+
+    data = _load_state()
+    if data is None:
+        return False
+
+    # Restore the task to its original section (or fall back by priority)
+    target = next(
+        (s for s in data.get("sections", []) if s.get("title") == rec["src_title"]),
+        None,
+    )
+    if target is None:
+        target_title = target_section_for_pri(rec["task"].get("pri"))
+        target = next((s for s in data.get("sections", []) if s.get("title") == target_title), None)
+    if target is None:
+        return False
+    target["tasks"].append(rec["task"])
+
+    # Reverse the markdown surgery: find the [/] line in ## Cancelled and
+    # restore it to active (state marker → [ ], strip _(cancelled: …)_).
+    now = datetime.datetime.now()
+    core_path = current_core_path(data.get("week"))
+    task_name = rec["task"].get("task", "")
+    try:
+        lines = core_path.read_text().split("\n")
+    except FileNotFoundError:
+        lines = None
+    if lines is not None:
+        cancel_idx = next(
+            (i for i, l in enumerate(lines) if l.strip() == "## Cancelled"),
+            None,
+        )
+        if cancel_idx is not None:
+            rel = find_task_line(lines[cancel_idx:], task_name, marker="[/]")
+            if rel is not None:
+                idx = cancel_idx + rel
+                restored = re.sub(r"\[/\]", "[ ]", lines[idx], count=1)
+                restored = re.sub(r"\s*_\(cancelled:[^)]+\)_", "", restored)
+                lines.pop(idx)
+                # Insert before ## Done
+                done_section = _done_boundary(lines, len(lines))
+                lines.insert(done_section, restored)
+        core_path.write_text("\n".join(lines))
+
+    _snapshot_focus_if_touched(data, rec["src_title"])
     renumber_tasks(data)
     _save_state(data, now)
     return True
@@ -2570,6 +2826,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         "/reorder":      lambda b: apply_reorder(b.get("from"), b.get("to"), b.get("before", True)),
         "/move-section": lambda b: apply_move_section(b.get("id"), b.get("section")),
         "/cancel":       lambda b: apply_cancel(b.get("id")),
+        "/uncancel":     lambda b: apply_uncancel(b.get("id")),
+        "/rename":       lambda b: apply_rename(b.get("id"), b.get("name", "")),
         "/add":          lambda b: apply_add(b),
     }
 
@@ -2604,15 +2862,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Long-lived Server-Sent Events stream. Pushes one `data: <version>`
         line each time `_state_version` changes; sends a `:keepalive` comment
         every 30s so intermediates don't close idle connections."""
+        global _sse_clients
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
+        with _state_cond:
+            _sse_clients += 1
+            last_seen = _state_version
+            _state_cond.notify_all()  # wake the watcher in case it's idle
         try:
-            with _state_cond:
-                last_seen = _state_version
             self.wfile.write(f"data: {last_seen}\n\n".encode())
             self.wfile.flush()
             while True:
@@ -2631,6 +2892,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
+        finally:
+            with _state_cond:
+                _sse_clients -= 1
 
     def log_message(self, *_):
         pass

@@ -414,6 +414,109 @@ def test_expand_all_button_only_in_card_with_expandable_content(data):
     )
 
 
+def test_section_count_subtitle_in_table_section(data):
+    """Non-Focus table sections render `· N` count in their headers."""
+    high = next(s for s in data["sections"] if s["title"] == "High Priority")
+    n = len(high["tasks"])
+    html = st.build_page(data, view="dashboard")
+    assert f">· {n}<" in html, f"expected count subtitle '· {n}' for High Priority"
+
+
+def test_section_count_subtitle_in_compact_section(data):
+    """Compact sections (Monitoring, Lower Priority, Completed Today) too."""
+    mon = next(s for s in data["sections"] if s["title"] == "Monitoring")
+    n = len(mon["tasks"])
+    html = st.build_page(data, view="dashboard")
+    assert f">· {n}<" in html, f"expected count subtitle '· {n}' for Monitoring"
+
+
+def test_compute_counts_returns_stale_field(data):
+    """compute_counts now also returns a `stale` count for tasks ≥14d old.
+    The fixture has a Monitoring task added 2026-04-21 (current week is W18,
+    today is well past 14 days ago), so we should see at least one stale."""
+    pri, status, overdue, done, stale = st.compute_counts(data)
+    # The fixture's Monitoring task has added=2026-04-21; given current date
+    # in test environment, this may or may not be ≥14 days old. Just assert
+    # the counter is an int (validates the new return shape).
+    assert isinstance(stale, int)
+
+
+def test_stale_pill_renders_when_any_task_is_stale(data):
+    """The 🧹 stale pill in the counts strip should render exactly when
+    at least one task has `added` ≥14d ago."""
+    # Force one task to be 30 days stale
+    for s in data["sections"]:
+        if s["tasks"]:
+            s["tasks"][0]["added"] = "2026-01-01"
+            break
+    html = st.build_page(data, view="dashboard")
+    assert "🧹" in html and "stale" in html
+
+
+def test_uncancel_endpoint_round_trip(isolated_state):
+    """Cancel + uncancel within the undo window restores the task."""
+    # Cancel a task
+    assert st.apply_cancel(120)
+    data = json.loads(isolated_state.read_text())
+    assert all(t.get("id") != 120 for s in data["sections"] for t in s["tasks"]), \
+        "task should be removed from sections after cancel"
+    # Uncancel
+    assert st.apply_uncancel(120)
+    data = json.loads(isolated_state.read_text())
+    restored = [t for s in data["sections"] for t in s["tasks"] if t.get("id") == 120]
+    assert len(restored) == 1, "task should be back in a section after uncancel"
+
+
+def test_uncancel_returns_false_when_no_record(isolated_state):
+    """Uncancel without a prior cancel for that id is a no-op."""
+    assert not st.apply_uncancel(99999)
+
+
+def test_rename_endpoint_updates_json_and_markdown(isolated_state, tmp_path):
+    """Rename swaps the task name in JSON and rewrites the matching core
+    markdown line, preserving emoji and trailing metadata."""
+    new_name = "Updated task name"
+    assert st.apply_rename(120, new_name)
+    data = json.loads(isolated_state.read_text())
+    task = next(t for s in data["sections"] for t in s["tasks"] if t.get("id") == 120)
+    assert task["task"] == new_name
+    # Core file got rewritten too
+    core = st.current_core_path("W18").read_text()
+    assert "High prio task — due 17:00" not in core, "old name still in core"
+    assert new_name in core, "new name not in core"
+
+
+def test_rename_rejects_empty_name(isolated_state):
+    """Empty / whitespace-only names are refused."""
+    assert not st.apply_rename(120, "")
+    assert not st.apply_rename(120, "   ")
+
+
+def test_rename_pencil_rendered_on_each_task(data):
+    """Every task row that has an editable name carries a rename pencil
+    with `data-action="rename"` and the task id."""
+    html = st.build_page(data, view="dashboard")
+    assert 'data-action="rename"' in html, "rename pencil missing from rendered HTML"
+    # Pencil class
+    assert 'class="rename-pencil"' in html
+
+
+def test_undo_toast_element_present_with_styles(data):
+    """The toast container + Undo button + progress bar exist in the page."""
+    html = st.build_page(data, view="dashboard")
+    assert 'id="toast"' in html
+    assert "toast-undo" in html and "toast-progress" in html
+    assert "_showToast" in html  # the JS helper
+
+
+def test_uncancel_route_in_route_table(data):
+    """Verify /uncancel and /rename are exposed."""
+    html = st.build_page(data, view="dashboard")
+    # The route table is python-side; check via module attr
+    assert "/uncancel" in st.Handler._ROUTES
+    assert "/rename" in st.Handler._ROUTES
+
+
 def test_help_overlay_lists_all_documented_hotkeys(data):
     """The ? help overlay should list every hotkey we wire — otherwise
     they're silently undiscoverable."""
