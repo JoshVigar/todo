@@ -454,16 +454,17 @@ def test_topbar_pills_swapped_on_refresh(data):
 
 
 def test_topbar_compacts_before_wrapping(data):
-    """Compaction breakpoints shrink topbar elements at narrow widths
-    before the flex-wrap fallback kicks in."""
+    """Compaction breakpoints fire BEFORE the topbar would flex-wrap.
+    Default content width ≈ 990px, so the first compaction must trigger
+    above that (we use 1040px), then a tighter pass at 860px before wrap
+    becomes the last-resort fallback."""
     html = st.build_page(data, view="dashboard")
-    # The 720px breakpoint trims week-title, view-switcher padding, and pill labels
-    assert "@media (max-width: 720px)" in html, (
-        "expected a 720px max-width breakpoint to shrink the topbar"
+    assert "@media (max-width: 1040px)" in html, (
+        "expected a 1040px max-width breakpoint — first compaction "
+        "should fire before the topbar would wrap (~990px)"
     )
-    # And the 560px breakpoint compacts pills further
-    assert "@media (max-width: 560px)" in html, (
-        "expected a 560px breakpoint for tightest pill compaction"
+    assert "@media (max-width: 860px)" in html, (
+        "expected an 860px breakpoint for tighter compaction"
     )
 
 

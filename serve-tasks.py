@@ -605,24 +605,23 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 }
 #view-switcher .vs-btn:hover { color: #e6edf3; background: #21262d; text-decoration: none; }
 #view-switcher .vs-btn.active { background: #30363d; color: #e6edf3; }
-/* Aggressive compaction below ~720px so the topbar shrinks before wrapping.
- * Order of squeeze: button labels gone (already at 900px) → tighten gaps →
- * shrink week title, view-switcher, and pills. Wrap is the last resort. */
-@media (max-width: 720px) {
+/* Two-step compaction tuned to fire BEFORE the topbar would wrap.
+ * Default content width is ~990px (week title + switcher + 4 pill clusters
+ * + Add/Sort + gaps); below that, flex-wrap would kick in. We squeeze gaps,
+ * pill padding, and font sizes earlier so the row stays single down to
+ * ~720px — only then do we accept wrap as a last resort. */
+@media (max-width: 1040px) {
   #topbar { gap: 8px; }
+  #topbar-pills .cnt-group { padding: 4px 9px; gap: 9px; font-size: 12px; }
+  #topbar-pills .counts-strip { gap: 6px; }
+  #sort-btn, #add-btn { padding: 5px 10px; }
+}
+@media (max-width: 860px) {
   .week-title { font-size: 17px; margin-right: 0; }
   #view-switcher { padding: 2px; }
   #view-switcher .vs-btn { padding: 3px 8px; font-size: 11px; }
-  #sort-btn, #add-btn { padding: 5px 9px; }
-  #topbar-pills .cnt-group {
-    padding: 4px 8px; gap: 8px; font-size: 12px;
-  }
-  #topbar-pills .cnt-group .label { display: none; }
-  #topbar-pills .counts-strip { gap: 6px; }
+  #topbar-pills .cnt-group { padding: 3px 7px; gap: 7px; font-size: 11px; }
   #filter-clear { padding: 3px 7px; font-size: 10px; }
-}
-@media (max-width: 560px) {
-  #topbar-pills .cnt-group { padding: 3px 6px; gap: 6px; font-size: 11px; }
 }
 .counts-strip {
   display: flex; flex-wrap: wrap; gap: 8px;
