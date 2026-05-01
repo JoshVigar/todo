@@ -337,9 +337,10 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
 #toast .toast-undo:hover { background: rgba(56, 139, 253, 0.12); border-color: #58a6ff; }
 #toast .toast-progress {
   display: inline-block; height: 2px; background: #58a6ff; opacity: 0.6;
-  width: 60px; transition: width 5s linear;
+  width: 60px; transform-origin: left center;
+  transition: transform 5s linear;
 }
-#toast .toast-progress.run { width: 0; }
+#toast .toast-progress.run { transform: scaleX(0); }
 .expand-all-btn {
   background: transparent; border: 0; cursor: pointer;
   color: #6e7681; font-size: 32px; line-height: 1;
