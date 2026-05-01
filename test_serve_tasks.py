@@ -343,16 +343,53 @@ def test_focus_progress_omitted_when_total_zero(data):
 
 
 def test_filter_input_present_with_hotkey_and_clear(data):
-    """The filter input + the JS to apply it + the / and Esc keybinds."""
+    """The filter input + the JS to apply it + the / and Esc keybinds + Clear button."""
     html = st.build_page(data, view="dashboard")
     assert 'id="task-filter"' in html
+    assert 'id="filter-clear"' in html
     assert "function _applyFilter()" in html
     # / focuses the filter
     assert "e.key === '/'" in html
-    # Esc clears the filter when it has focus or content
-    assert "fi2.value = ''" in html
+    # Esc clears all filters via _clearFilters
+    assert "_clearFilters()" in html
     # filtered-out CSS rule hides matching rows
     assert ".filtered-out { display: none !important; }" in html
+
+
+def test_pill_filter_attrs_present(data):
+    """Counts-strip pills carry data-filter-key/data-filter-val so JS can
+    toggle them as filters; rows carry data-pri/data-status/data-stale so
+    the matcher can decide visibility."""
+    html = st.build_page(data, view="dashboard")
+    # Pills
+    assert 'data-filter-key="pri" data-filter-val="P1"' in html or \
+           'data-filter-key="pri" data-filter-val="P2"' in html, (
+        "no priority pill carries filter attrs"
+    )
+    # Rows
+    assert 'data-pri=' in html and 'data-status=' in html
+    # JS uses _pillFilters set
+    assert "_pillFilters" in html and "_rowMatchesPills" in html
+
+
+def test_clearfilters_resets_text_and_pills(data):
+    """The Clear button hooks `_clearFilters` which resets both inputs."""
+    html = st.build_page(data, view="dashboard")
+    assert "function _clearFilters()" in html
+    assert "_pillFilters.clear()" in html
+
+
+def test_filter_data_attrs_helper(data):
+    """`_filter_data_attrs(task)` returns `data-pri`, `data-status`, and
+    `data-stale="1"` when the task is ≥14d old."""
+    fresh = {"pri": "P1", "status": "open", "added": time_module.strftime("%Y-%m-%d", time_module.localtime())}
+    out = st._filter_data_attrs(fresh)
+    assert 'data-pri="P1"' in out
+    assert 'data-status="open"' in out
+    assert "data-stale" not in out
+    old = {"pri": "P3", "status": "waiting", "added": "2024-01-01"}
+    out = st._filter_data_attrs(old)
+    assert 'data-stale="1"' in out
 
 
 def test_filter_hides_cards_with_no_matches(data):

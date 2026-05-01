@@ -225,6 +225,28 @@ def _insert_under_dated_section(lines, section_title, dated_line, today_str, *, 
         lines.insert(section_idx + 1, "")
 
 
+def _filter_data_attrs(task):
+    """Per-row data-* attributes the JS filter logic reads.
+    `data-pri` / `data-status` for pill matching; `data-stale="1"` if the
+    task was added ≥14 days ago. Overdue is detected via the existing
+    `row-overdue` class so we don't duplicate."""
+    parts = []
+    pri = task.get("pri")
+    if pri:
+        parts.append(f' data-pri="{pri}"')
+    status = task.get("status")
+    if status:
+        parts.append(f' data-status="{status}"')
+    added = task.get("added")
+    if added:
+        try:
+            if (datetime.date.today() - datetime.date.fromisoformat(added)).days >= 14:
+                parts.append(' data-stale="1"')
+        except ValueError:
+            pass
+    return "".join(parts)
+
+
 def find_task_line(lines, task_name, *, end_idx=None, marker=None):
     """Find the first line whose extracted task name == task_name (case-insensitive).
     `marker` like '[x]' constrains the state marker; None matches any.
@@ -320,7 +342,23 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
   font-family: inherit;
 }
 #task-filter:focus { outline: none; border-color: #58a6ff; }
+#filter-clear {
+  display: none; background: transparent; border: 1px solid #30363d;
+  color: #8b949e; padding: 4px 10px; border-radius: 6px;
+  cursor: pointer; font-size: 11px; font-family: inherit;
+}
+#filter-clear:hover { color: #e6edf3; border-color: #484f58; }
 .filtered-out { display: none !important; }
+/* Clickable counts-strip pills */
+.cnt-group [data-filter-key] {
+  cursor: pointer; border-radius: 4px; padding: 1px 4px;
+  transition: background 0.1s, outline-color 0.1s;
+}
+.cnt-group [data-filter-key]:hover { background: rgba(255,255,255,0.05); }
+.cnt-group [data-filter-key].filter-active {
+  background: rgba(56,139,253,0.18);
+  outline: 1px solid rgba(56,139,253,0.6);
+}
 #toast {
   position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
   background: #1c2128; border: 1px solid #30363d; border-radius: 8px;
@@ -716,36 +754,77 @@ function _showToast(message, onUndo) {
 // Filter visible tasks by substring match against task name.
 // Re-runs on every input event and after every DOM swap so the filter
 // survives SSE pushes and click-driven refreshes.
+// Active pill filters as `key:val` strings (`pri:P1`, `status:waiting`,
+// `flag:overdue`, `flag:stale`). Multiple active = union (OR). Combines
+// with the text input via AND.
+var _pillFilters = new Set();
+
+function _rowMatchesPills(row) {
+  if (_pillFilters.size === 0) return true;
+  var pri = row.dataset.pri || '';
+  var status = row.dataset.status || '';
+  var stale = row.dataset.stale === '1';
+  var overdue = row.classList.contains('row-overdue');
+  var matched = false;
+  _pillFilters.forEach(function(entry) {
+    var idx = entry.indexOf(':');
+    var key = entry.slice(0, idx), val = entry.slice(idx + 1);
+    if (key === 'pri' && pri === val) matched = true;
+    else if (key === 'status' && status === val) matched = true;
+    else if (key === 'flag' && val === 'overdue' && overdue) matched = true;
+    else if (key === 'flag' && val === 'stale' && stale) matched = true;
+  });
+  return matched;
+}
+
 function _applyFilter() {
   var input = document.getElementById('task-filter');
-  if (!input) return;
-  var q = input.value.trim().toLowerCase();
+  var q = input ? input.value.trim().toLowerCase() : '';
   var rows = document.querySelectorAll('tr[draggable="true"], .cmp-row[data-id]');
   rows.forEach(function(row) {
-    // Match against the .task-name span only — excludes the pencil glyph
-    // and the trailing due/badge contents that would cause false matches.
     var nameEl = row.querySelector('.task-name') ||
                  row.querySelector('.task-cell, .cmp-task');
     var text = (nameEl ? nameEl.textContent : row.textContent).toLowerCase();
-    var hide = q && text.indexOf(q) === -1;
+    var textMatch = !q || text.indexOf(q) !== -1;
+    var pillMatch = _rowMatchesPills(row);
+    var hide = !(textMatch && pillMatch);
     row.classList.toggle('filtered-out', hide);
     var nxt = row.nextElementSibling;
     if (nxt && (nxt.classList.contains('row-detail') || nxt.classList.contains('cmp-detail'))) {
       nxt.classList.toggle('filtered-out', hide);
     }
   });
-  // Hide whole cards (sections) with no visible matches while filtering.
+  // Hide whole cards (sections) with no visible matches while any filter is active.
+  var anyFilter = q || _pillFilters.size > 0;
   document.querySelectorAll('.task-card').forEach(function(card) {
-    if (!q) { card.classList.remove('filtered-out'); return; }
+    if (!anyFilter) { card.classList.remove('filtered-out'); return; }
     var visible = card.querySelectorAll(
       'tr[draggable="true"]:not(.filtered-out), .cmp-row[data-id]:not(.filtered-out)'
     );
     card.classList.toggle('filtered-out', visible.length === 0);
   });
+  // Mirror active state onto the pills.
+  document.querySelectorAll('[data-filter-key]').forEach(function(pill) {
+    var entry = pill.dataset.filterKey + ':' + pill.dataset.filterVal;
+    pill.classList.toggle('filter-active', _pillFilters.has(entry));
+  });
+  // Clear button visible when anything is filtering.
+  var clearBtn = document.getElementById('filter-clear');
+  if (clearBtn) clearBtn.style.display = anyFilter ? '' : 'none';
 }
+
+function _clearFilters() {
+  _pillFilters.clear();
+  var input = document.getElementById('task-filter');
+  if (input) input.value = '';
+  _applyFilter();
+}
+
 (function() {
   var input = document.getElementById('task-filter');
   if (input) input.addEventListener('input', _applyFilter);
+  var clearBtn = document.getElementById('filter-clear');
+  if (clearBtn) clearBtn.addEventListener('click', _clearFilters);
 })();
 
 // Toggle every expandable row in `scope` (defaults to whole document).
@@ -772,6 +851,17 @@ function _toggleExpandAll(scope) {
 }
 
 document.addEventListener('click', function(e) {
+  // Counts-strip pill click → toggle a filter. Multiple pills combine.
+  var pill = e.target.closest('[data-filter-key]');
+  if (pill) {
+    e.preventDefault();
+    var entry = pill.dataset.filterKey + ':' + pill.dataset.filterVal;
+    if (_pillFilters.has(entry)) _pillFilters.delete(entry);
+    else _pillFilters.add(entry);
+    _applyFilter();
+    return;
+  }
+
   // Rename pencil — swap the task-name span for an <input>. Save on Enter
   // or blur; cancel on Esc. Stops propagation so the row's expand toggle
   // doesn't also fire.
@@ -1195,12 +1285,15 @@ document.addEventListener('keydown', function(e) {
   var inInput = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
                       t.tagName === 'SELECT' || t.isContentEditable);
 
-  // Esc always handled — closes overlays / clears filter
+  // Esc always handled — closes overlays / clears all filters
   if (e.key === 'Escape') {
     if (help && help.classList.contains('open')) { _closeHelp(); return; }
     var fi2 = document.getElementById('task-filter');
-    if (fi2 && (t === fi2 || fi2.value)) {
-      fi2.value = ''; fi2.blur(); _applyFilter(); return;
+    var hasFilter = (fi2 && fi2.value) || _pillFilters.size > 0;
+    if (hasFilter || (fi2 && t === fi2)) {
+      if (fi2) fi2.blur();
+      _clearFilters();
+      return;
     }
     // (modal Escape and ctx-menu Escape are handled by their own listeners)
     // Collapse all expanded rows on Esc when no overlay is open
@@ -1454,6 +1547,7 @@ def render_core_section(title, tasks, week, subtitle=""):
         due = t.get("due") or "—"
         due_html = f'<span class="due">{h(due)}</span>' if is_due_soon(due) else h(due)
         drag_attrs = f' draggable="true" data-id="{task_id}"'
+        filter_attrs = _filter_data_attrs(t)
         why = (t.get("why") or "").strip()
         has_why = bool(why) and why != "—"
         if has_why:
@@ -1471,7 +1565,7 @@ def render_core_section(title, tasks, week, subtitle=""):
             f'<td>{render_links(t.get("links",[]))}</td>',
             f'<td>{render_status(t.get("status","open"), task_id)}</td>',
         ]
-        rows.append(f'<tr{rc}{drag_attrs}>{"".join(cells)}</tr>')
+        rows.append(f'<tr{rc}{drag_attrs}{filter_attrs}>{"".join(cells)}</tr>')
         # Sibling detail row revealed on `.expanded`. Mirrors the compact-row
         # detail panel — but the table already shows pri/age/link/status, so
         # the panel only carries the field that isn't visible: Why.
@@ -1519,7 +1613,7 @@ def render_compact_section(title, tasks, week):
         pri = t.get("pri") or ""
         pri_emoji = PRI_EMOJI.get(pri, "")
         rows.append(
-            f'<div class="cmp-row {rc_class}" draggable="true" data-id="{task_id}">'
+            f'<div class="cmp-row {rc_class}" draggable="true" data-id="{task_id}"{_filter_data_attrs(t)}>'
             f'<span class="cmp-id" data-id="{task_id}">{task_id}</span>'
             f'<span class="cmp-pri">{pri_emoji}</span>'
             f'<span class="cmp-task"><span class="task-name">{h(t.get("task",""))}</span>'
@@ -1583,9 +1677,12 @@ def render_counts_strip(data):
 
     groups = []
 
-    # Priority group — colour dots speak for themselves, no label needed
+    # Priority group — colour dots speak for themselves, no label needed.
+    # Each `<span class="stat">` carries data-filter-* so a click filters the
+    # task list to that priority. Multiple selected pills combine (OR).
     pri_stats = "".join(
-        f'<span class="stat"><span class="dot" style="background:{pri_colors[p]}"></span>{pri[p]}</span>'
+        f'<span class="stat" data-filter-key="pri" data-filter-val="{p}" title="Filter to {p}">'
+        f'<span class="dot" style="background:{pri_colors[p]}"></span>{pri[p]}</span>'
         for p in ("P1", "P2", "P3", "P4", "P5") if pri[p]
     )
     if pri_stats:
@@ -1593,19 +1690,19 @@ def render_counts_strip(data):
 
     # Status group
     status_stats = []
-    if status["in_progress"]: status_stats.append(f'<span class="stat"><span class="icon">🔄</span>{status["in_progress"]}</span>')
-    if status["waiting"]:     status_stats.append(f'<span class="stat"><span class="icon">⏳</span>{status["waiting"]}</span>')
-    if status["blocked"]:     status_stats.append(f'<span class="stat"><span class="icon">🚫</span>{status["blocked"]}</span>')
+    if status["in_progress"]: status_stats.append(f'<span class="stat" data-filter-key="status" data-filter-val="in_progress" title="Filter to In progress"><span class="icon">🔄</span>{status["in_progress"]}</span>')
+    if status["waiting"]:     status_stats.append(f'<span class="stat" data-filter-key="status" data-filter-val="waiting" title="Filter to Waiting"><span class="icon">⏳</span>{status["waiting"]}</span>')
+    if status["blocked"]:     status_stats.append(f'<span class="stat" data-filter-key="status" data-filter-val="blocked" title="Filter to Blocked"><span class="icon">🚫</span>{status["blocked"]}</span>')
     if status_stats:
         groups.append(f'<div class="cnt-group">{"".join(status_stats)}</div>')
 
     # Overdue (only show if non-zero)
     if overdue:
-        groups.append(f'<div class="cnt-group alert"><span class="stat"><span class="icon">⚠️</span>{overdue} overdue</span></div>')
+        groups.append(f'<div class="cnt-group alert"><span class="stat" data-filter-key="flag" data-filter-val="overdue" title="Filter to overdue"><span class="icon">⚠️</span>{overdue} overdue</span></div>')
 
     # Stale (only show if any task ≥14 days old — ADHD-friendly drift detector)
     if stale:
-        groups.append(f'<div class="cnt-group alert"><span class="stat"><span class="icon">🧹</span>{stale} stale</span></div>')
+        groups.append(f'<div class="cnt-group alert"><span class="stat" data-filter-key="flag" data-filter-val="stale" title="Filter to stale"><span class="icon">🧹</span>{stale} stale</span></div>')
 
     # Done today (always show — small dopamine hit when it's >0)
     groups.append(f'<div class="cnt-group success"><span class="stat"><span class="icon">✅</span>{done} done today</span></div>')
@@ -1943,6 +2040,7 @@ def _view_switcher_html(current, week=""):
         f'<div id="view-switcher">{items}</div>'
         f'<input id="task-filter" type="text" placeholder="Filter tasks ( / )" '
         f'autocomplete="off" spellcheck="false">'
+        f'<button id="filter-clear" title="Clear filters">✕ Clear</button>'
         f'</div>'
     )
 
@@ -2001,6 +2099,7 @@ def build_page(data, view="dashboard"):
         f'<tr><td>Submit Add modal</td><td><kbd>⌘</kbd>+<kbd>Enter</kbd></td></tr>'
         f'<tr><td>Toggle dashboard / classic view</td><td><kbd>c</kbd></td></tr>'
         f'<tr><td>Focus filter input</td><td><kbd>/</kbd></td></tr>'
+        f'<tr><td>Click counts-strip pill to filter (multi-select)</td><td>—</td></tr>'
         f'<tr><td>Highlight next row</td><td><kbd>j</kbd> <kbd>↓</kbd></td></tr>'
         f'<tr><td>Highlight previous row</td><td><kbd>k</kbd> <kbd>↑</kbd></td></tr>'
         f'<tr><td>Expand / collapse highlighted row</td><td><kbd>Enter</kbd></td></tr>'
