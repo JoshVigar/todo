@@ -259,9 +259,10 @@ body {
   color: #e6edf3;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  padding: 3px 0 3px 10px;
-  margin: 0 0 8px;
+  padding: 0 0 0 10px;
+  margin: 0 0 6px;
   border-left: 3px solid #388bfd;
+  min-height: 22px;
 }
 .task-card {
   background: #1c2128;
@@ -343,8 +344,8 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
 #toast .toast-progress.run { transform: scaleX(0); }
 .expand-all-btn {
   background: transparent; border: 0; cursor: pointer;
-  color: #6e7681; font-size: 32px; line-height: 1;
-  padding: 0 10px; border-radius: 4px;
+  color: #6e7681; font-size: 22px; line-height: 1;
+  padding: 0 8px; border-radius: 4px;
 }
 .expand-all-btn:hover { color: #c9d1d9; background: #21262d; }
 .expand-all-btn.open { color: #58a6ff; }
