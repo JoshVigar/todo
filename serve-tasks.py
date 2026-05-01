@@ -156,11 +156,13 @@ def _watch_state():
         with _state_cond:
             while _sse_clients == 0:
                 _state_cond.wait()  # zero clients = nothing to push to
-        time.sleep(2.0)
+        # On waking, do an immediate poll — covers the case where an
+        # external mutation happened while no clients were connected.
         sig = _state_signature()
         if sig is not None and sig != last:
             last = sig
             _bump_state_version()
+        time.sleep(2.0)
 
 
 if not os.environ.get("SERVE_TASKS_NO_WATCH"):
@@ -718,7 +720,10 @@ function _applyFilter() {
   var q = input.value.trim().toLowerCase();
   var rows = document.querySelectorAll('tr[draggable="true"], .cmp-row[data-id]');
   rows.forEach(function(row) {
-    var nameEl = row.querySelector('.task-cell, .cmp-task');
+    // Match against the .task-name span only — excludes the pencil glyph
+    // and the trailing due/badge contents that would cause false matches.
+    var nameEl = row.querySelector('.task-name') ||
+                 row.querySelector('.task-cell, .cmp-task');
     var text = (nameEl ? nameEl.textContent : row.textContent).toLowerCase();
     var hide = q && text.indexOf(q) === -1;
     row.classList.toggle('filtered-out', hide);
@@ -777,7 +782,7 @@ document.addEventListener('click', function(e) {
     var nameSpan = rowEl.querySelector('.task-name');
     if (!nameSpan) return;
     var current = nameSpan.textContent;
-    var taskId = parseInt(pencil.dataset.id);
+    var taskId = parseInt(rowEl.dataset.id);
     var input = document.createElement('input');
     input.type = 'text';
     input.value = current;
@@ -1013,6 +1018,10 @@ document.addEventListener('drop', function(e) {
 function _refreshTasks(force) {
   if (_dragPaused) return;
   if (!force && !document.hasFocus()) return;
+  // Don't blow away an in-progress rename — refreshing replaces the
+  // entire #tasks-content innerHTML, which would drop the user's input.
+  var ae = document.activeElement;
+  if (ae && ae.classList && ae.classList.contains('rename-input')) return;
   var sy = window.scrollY;
   // Preserve which detail panels are currently expanded across the swap
   var openIds = Array.prototype.map.call(
@@ -1454,7 +1463,7 @@ def render_core_section(title, tasks, week, subtitle=""):
             f'<td class="num" data-id="{task_id}">{task_id}</td>',
             f'<td>{render_pri(t.get("pri"), task_id)}</td>',
             f'<td class="{task_cls}"><span class="task-name">{h(t.get("task",""))}</span>'
-            f'<span class="rename-pencil" title="Rename" data-action="rename" data-id="{task_id}">✎</span></td>',
+            f'<span class="rename-pencil" title="Rename" data-action="rename">✎</span></td>',
             f'<td>{due_html}</td>',
             f'<td>{format_age(t.get("from"), week, t.get("added"))}</td>',
             f'<td>{render_links(t.get("links",[]))}</td>',
@@ -1483,7 +1492,7 @@ def render_core_section(title, tasks, week, subtitle=""):
         '<th style="width:120px">Status</th>',
     ]
     # If no progress subtitle was passed (i.e. not Today's Focus), show count
-    if not subtitle and tasks:
+    if not subtitle:
         subtitle = f"{len(tasks)}"
     return (
         _section_header(label, color, expandable=any_why, subtitle=subtitle)
@@ -1512,7 +1521,7 @@ def render_compact_section(title, tasks, week):
             f'<span class="cmp-id" data-id="{task_id}">{task_id}</span>'
             f'<span class="cmp-pri">{pri_emoji}</span>'
             f'<span class="cmp-task"><span class="task-name">{h(t.get("task",""))}</span>'
-            f'<span class="rename-pencil" title="Rename" data-action="rename" data-id="{task_id}">✎</span></span>'
+            f'<span class="rename-pencil" title="Rename" data-action="rename">✎</span></span>'
             f'{due_html}'
             f'</div>'
         )
@@ -2452,17 +2461,36 @@ def apply_cancel(task_id):
     return True
 
 
-def update_core_file_name(old_name, new_name, week=None):
+def update_core_file_name(old_name, new_name, week=None, pri=None):
     """Rewrite the task-name slot of `old_name`'s active line to `new_name`,
     preserving the state marker, priority emoji, and any trailing metadata
-    (` — due …`, ` (link)`, ` _(carried…)_`, ` _(why:…)_`)."""
+    (` — due …`, ` (link)`, ` _(carried…)_`, ` _(why:…)_`).
+    If `pri` is set, prefers a line whose emoji matches — disambiguates when
+    two tasks share a name across different priorities."""
     core_path = current_core_path(week)
     try:
         lines = core_path.read_text().split("\n")
     except FileNotFoundError:
         return
     done_section = _done_boundary(lines, len(lines))
-    i = find_task_line(lines, old_name, end_idx=done_section)
+    expected_emoji = PRI_EMOJI.get(pri) if pri else None
+
+    # Find the matching line; prefer an exact (name + priority emoji) match
+    # over a name-only match when `pri` is given.
+    target_idx = None
+    fallback_idx = None
+    for i, line in enumerate(lines[:done_section]):
+        stripped = line.strip()
+        if not stripped.startswith("- ["):
+            continue
+        if _extract_task_name(line) != old_name:
+            continue
+        if expected_emoji and expected_emoji in line:
+            target_idx = i
+            break
+        if fallback_idx is None:
+            fallback_idx = i
+    i = target_idx if target_idx is not None else fallback_idx
     if i is None:
         return
     line = lines[i]
@@ -2482,24 +2510,37 @@ def update_core_file_name(old_name, new_name, week=None):
     core_path.write_text("\n".join(lines))
 
 
+# Reject names containing newlines, tabs, or markdown-marker glyphs that
+# would break the core-file structure if written verbatim.
+_RENAME_FORBIDDEN = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def apply_rename(task_id, new_name):
     """Rename a task's display name. Updates JSON `task` field and the
-    matching markdown line's name slot."""
+    matching markdown line's name slot. Rejects names with control chars
+    (newlines, tabs, etc.) that would corrupt the markdown."""
     new_name = (new_name or "").strip()
     if not new_name:
+        return False
+    if _RENAME_FORBIDDEN.search(new_name):
         return False
     data = _load_state()
     if data is None:
         return False
-    task, _section = find_task_by_id(data, task_id)
+    task, source_section = find_task_by_id(data, task_id)
     if task is None:
         return False
     old_name = task.get("task", "")
     if old_name == new_name:
         return True  # no-op success
+    pri = task.get("pri")
     task["task"] = new_name
     _save_state(data)
-    update_core_file_name(old_name, new_name, week=data.get("week"))
+    update_core_file_name(old_name, new_name, week=data.get("week"), pri=pri)
+    # If the renamed task was in Today's Focus, the journal still keys the
+    # focus list by old name — re-snapshot so the new name shows up.
+    if source_section is not None:
+        _snapshot_focus_if_touched(data, source_section.get("title", ""))
     return True
 
 
@@ -2542,17 +2583,22 @@ def apply_uncancel(task_id):
             (i for i, l in enumerate(lines) if l.strip() == "## Cancelled"),
             None,
         )
+        wrote = False
         if cancel_idx is not None:
             rel = find_task_line(lines[cancel_idx:], task_name, marker="[/]")
             if rel is not None:
                 idx = cancel_idx + rel
-                restored = re.sub(r"\[/\]", "[ ]", lines[idx], count=1)
+                # Restore the original state marker, not always [ ].
+                marker = STATE_MARKER.get(rec["task"].get("status", "open"), "[ ]")
+                restored = re.sub(r"\[/\]", marker, lines[idx], count=1)
                 restored = re.sub(r"\s*_\(cancelled:[^)]+\)_", "", restored)
                 lines.pop(idx)
                 # Insert before ## Done
                 done_section = _done_boundary(lines, len(lines))
                 lines.insert(done_section, restored)
-        core_path.write_text("\n".join(lines))
+                wrote = True
+        if wrote:
+            core_path.write_text("\n".join(lines))
 
     _snapshot_focus_if_touched(data, rec["src_title"])
     renumber_tasks(data)

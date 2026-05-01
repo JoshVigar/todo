@@ -430,15 +430,19 @@ def test_section_count_subtitle_in_compact_section(data):
     assert f">· {n}<" in html, f"expected count subtitle '· {n}' for Monitoring"
 
 
-def test_compute_counts_returns_stale_field(data):
-    """compute_counts now also returns a `stale` count for tasks ≥14d old.
-    The fixture has a Monitoring task added 2026-04-21 (current week is W18,
-    today is well past 14 days ago), so we should see at least one stale."""
-    pri, status, overdue, done, stale = st.compute_counts(data)
-    # The fixture's Monitoring task has added=2026-04-21; given current date
-    # in test environment, this may or may not be ≥14 days old. Just assert
-    # the counter is an int (validates the new return shape).
-    assert isinstance(stale, int)
+def test_compute_counts_stale_logic(data):
+    """compute_counts returns 0 when no task is ≥14d old; non-zero when one is."""
+    # Force all `added` to today
+    today_iso = time_module.strftime("%Y-%m-%d", time_module.localtime())
+    for s in data["sections"]:
+        for t in s["tasks"]:
+            t["added"] = today_iso
+    _, _, _, _, stale = st.compute_counts(data)
+    assert stale == 0, "no tasks ≥14d should be 0 stale"
+    # Now plant one stale task
+    data["sections"][0]["tasks"][0]["added"] = "2024-01-01"
+    _, _, _, _, stale = st.compute_counts(data)
+    assert stale == 1
 
 
 def test_stale_pill_renders_when_any_task_is_stale(data):
@@ -454,17 +458,51 @@ def test_stale_pill_renders_when_any_task_is_stale(data):
 
 
 def test_uncancel_endpoint_round_trip(isolated_state):
-    """Cancel + uncancel within the undo window restores the task."""
+    """Cancel + uncancel within the undo window restores both the JSON
+    state and the markdown."""
+    core_path = st.current_core_path("W18")
     # Cancel a task
     assert st.apply_cancel(120)
     data = json.loads(isolated_state.read_text())
     assert all(t.get("id") != 120 for s in data["sections"] for t in s["tasks"]), \
         "task should be removed from sections after cancel"
+    core_after_cancel = core_path.read_text()
+    assert "[/]" in core_after_cancel, "cancel should write a [/] line"
+    assert "## Cancelled" in core_after_cancel
     # Uncancel
     assert st.apply_uncancel(120)
     data = json.loads(isolated_state.read_text())
     restored = [t for s in data["sections"] for t in s["tasks"] if t.get("id") == 120]
     assert len(restored) == 1, "task should be back in a section after uncancel"
+    core_after_uncancel = core_path.read_text()
+    # The [/] line for this task is gone; an active [ ] (or whatever marker) line is present
+    assert "_(cancelled:" not in core_after_uncancel, \
+        "uncancel should strip the _(cancelled: …)_ tag"
+    # Original task name is in the active area
+    done_idx = core_after_uncancel.find("## Done")
+    cancelled_idx = core_after_uncancel.find("## Cancelled")
+    active_chunk = core_after_uncancel[:min(x for x in (done_idx, cancelled_idx, len(core_after_uncancel)) if x != -1)]
+    assert "High prio task" in active_chunk, "uncancelled task missing from active markdown"
+
+
+def test_uncancel_preserves_status_marker(isolated_state):
+    """Uncanceling an in-progress task restores it with [-], not [ ]."""
+    core_path = st.current_core_path("W18")
+    # Promote 120 to in_progress, write the marker manually
+    data = json.loads(isolated_state.read_text())
+    task = next(t for s in data["sections"] for t in s["tasks"] if t.get("id") == 120)
+    task["status"] = "in_progress"
+    isolated_state.write_text(json.dumps(data))
+    text = core_path.read_text()
+    text = text.replace("- [ ] 🟠 High prio task", "- [-] 🟠 High prio task")
+    core_path.write_text(text)
+
+    assert st.apply_cancel(120)
+    assert st.apply_uncancel(120)
+    core = core_path.read_text()
+    # The restored line should carry [-] back, not [ ]
+    assert "- [-] 🟠 High prio task" in core, \
+        f"in_progress marker should survive cancel→uncancel; got:\n{core}"
 
 
 def test_uncancel_returns_false_when_no_record(isolated_state):
@@ -472,24 +510,60 @@ def test_uncancel_returns_false_when_no_record(isolated_state):
     assert not st.apply_uncancel(99999)
 
 
-def test_rename_endpoint_updates_json_and_markdown(isolated_state, tmp_path):
-    """Rename swaps the task name in JSON and rewrites the matching core
-    markdown line, preserving emoji and trailing metadata."""
+def test_rename_endpoint_preserves_emoji_and_due(isolated_state):
+    """Rename keeps the priority emoji and trailing ` — due …` text intact."""
     new_name = "Updated task name"
     assert st.apply_rename(120, new_name)
     data = json.loads(isolated_state.read_text())
     task = next(t for s in data["sections"] for t in s["tasks"] if t.get("id") == 120)
     assert task["task"] == new_name
-    # Core file got rewritten too
     core = st.current_core_path("W18").read_text()
-    assert "High prio task — due 17:00" not in core, "old name still in core"
-    assert new_name in core, "new name not in core"
+    # Old name gone; new name present with the original emoji and due intact
+    assert "High prio task" not in core, "old name still in core"
+    assert f"- [ ] 🟠 {new_name} — due 17:00" in core, (
+        f"emoji + due not preserved on rename; got:\n{core}"
+    )
 
 
-def test_rename_rejects_empty_name(isolated_state):
-    """Empty / whitespace-only names are refused."""
+def test_rename_disambiguates_by_priority_when_names_collide(isolated_state):
+    """Two tasks with the same name but different priority — rename one,
+    only that one's markdown line gets touched."""
+    core_path = st.current_core_path("W18")
+    # Add a duplicate-name task with different priority to JSON + core
+    data = json.loads(isolated_state.read_text())
+    high = next(s for s in data["sections"] if s["title"] == "High Priority")
+    high["tasks"][0]["task"] = "Shared name"
+    high["tasks"][0]["pri"] = "P2"
+    # Add a P3 dup in Lower Priority
+    lower = next(s for s in data["sections"] if s["title"] == "Lower Priority")
+    lower["tasks"].append({"id": 999, "num": 99, "pri": "P3", "task": "Shared name",
+                            "due": "—", "from": "W18", "added": "2026-04-28",
+                            "links": [], "status": "open", "why": "—"})
+    isolated_state.write_text(json.dumps(data))
+    text = core_path.read_text()
+    text = text.replace("- [ ] 🟠 High prio task — due 17:00", "- [ ] 🟠 Shared name")
+    text += "\n- [ ] 🟡 Shared name\n"
+    core_path.write_text(text)
+
+    # Rename the P2 (orange) one
+    assert st.apply_rename(120, "Renamed-orange")
+    core = core_path.read_text()
+    # Orange line renamed
+    assert "- [ ] 🟠 Renamed-orange" in core
+    # Yellow line untouched
+    assert "- [ ] 🟡 Shared name" in core, (
+        f"P3 duplicate should NOT have been renamed; got:\n{core}"
+    )
+
+
+def test_rename_rejects_empty_or_dangerous_names(isolated_state):
+    """Empty / whitespace-only / control-char names are refused."""
     assert not st.apply_rename(120, "")
     assert not st.apply_rename(120, "   ")
+    # Newline injection — would corrupt markdown structure
+    assert not st.apply_rename(120, "Foo\n## Done\n- [ ] Injected")
+    assert not st.apply_rename(120, "tab\there")
+    assert not st.apply_rename(120, "carriage\rreturn")
 
 
 def test_rename_pencil_rendered_on_each_task(data):
