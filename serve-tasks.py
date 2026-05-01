@@ -810,7 +810,7 @@ function _applyFilter() {
   });
   // Clear button visible when anything is filtering.
   var clearBtn = document.getElementById('filter-clear');
-  if (clearBtn) clearBtn.style.display = anyFilter ? '' : 'none';
+  if (clearBtn) clearBtn.style.display = anyFilter ? 'inline-block' : 'none';
 }
 
 function _clearFilters() {
