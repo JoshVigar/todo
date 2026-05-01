@@ -537,9 +537,9 @@ p.counts { margin: 6px 0; color: #8b949e; font-size: 12px; }
 #add-btn { color: #3fb950; border-color: rgba(63,185,80,0.35); }
 #add-btn:hover { background: rgba(63,185,80,0.12); border-color: rgba(63,185,80,0.6); color: #3fb950; }
 .btn-icon { font-weight: 700; }
-/* Mobile-first: hide button text by default; show on wider widths */
-.btn-label { display: none; }
-@media (min-width: 900px) { .btn-label { display: inline; } }
+/* Button labels are visible by default. They get hidden when JS detects the
+ * topbar has wrapped — see _autoCompactTopbar. No viewport breakpoints. */
+.btn-label { display: inline; }
 /* Topbar pills wrapper — the counts strip lives here */
 #topbar-pills {
   display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center;
@@ -605,24 +605,20 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 }
 #view-switcher .vs-btn:hover { color: #e6edf3; background: #21262d; text-decoration: none; }
 #view-switcher .vs-btn.active { background: #30363d; color: #e6edf3; }
-/* Two-step compaction tuned to fire BEFORE the topbar would wrap.
- * Default content width is ~990px (week title + switcher + 4 pill clusters
- * + Add/Sort + gaps); below that, flex-wrap would kick in. We squeeze gaps,
- * pill padding, and font sizes earlier so the row stays single down to
- * ~720px — only then do we accept wrap as a last resort. */
-@media (max-width: 1040px) {
-  #topbar { gap: 8px; }
-  #topbar-pills .cnt-group { padding: 4px 9px; gap: 9px; font-size: 12px; }
-  #topbar-pills .counts-strip { gap: 6px; }
-  #sort-btn, #add-btn { padding: 5px 10px; }
-}
-@media (max-width: 860px) {
-  .week-title { font-size: 17px; margin-right: 0; }
-  #view-switcher { padding: 2px; }
-  #view-switcher .vs-btn { padding: 3px 8px; font-size: 11px; }
-  #topbar-pills .cnt-group { padding: 3px 7px; gap: 7px; font-size: 11px; }
-  #filter-clear { padding: 3px 7px; font-size: 10px; }
-}
+/* Two compaction tiers, applied by JS when the topbar would wrap.
+ * Tier 1 (.compact):       hide button labels, tighten gaps and pill padding.
+ * Tier 2 (.compact-tight): also shrink week title, view-switcher, pill font.
+ * Selection is content-driven — see _autoCompactTopbar — not viewport-based. */
+#topbar.compact .btn-label { display: none; }
+#topbar.compact { gap: 8px; }
+#topbar.compact #topbar-pills .cnt-group { padding: 4px 9px; gap: 9px; font-size: 12px; }
+#topbar.compact #topbar-pills .counts-strip { gap: 6px; }
+#topbar.compact #sort-btn, #topbar.compact #add-btn { padding: 5px 10px; }
+#topbar.compact-tight .week-title { font-size: 17px; margin-right: 0; }
+#topbar.compact-tight #view-switcher { padding: 2px; }
+#topbar.compact-tight #view-switcher .vs-btn { padding: 3px 8px; font-size: 11px; }
+#topbar.compact-tight #topbar-pills .cnt-group { padding: 3px 7px; gap: 7px; font-size: 11px; }
+#topbar.compact #filter-clear { padding: 3px 7px; font-size: 10px; }
 .counts-strip {
   display: flex; flex-wrap: wrap; gap: 8px;
   margin-bottom: 14px;
@@ -906,6 +902,44 @@ function _clearFilters() {
   if (input) input.value = '';
   _applyFilter();
 }
+
+// Detects whether the #topbar has wrapped to a second row. Iteratively
+// applies .compact then .compact-tight to recover a single-row layout.
+// Driven by content (children's offsetTop), not viewport thresholds, so
+// it adapts to whatever combination of pills/badges happens to render.
+var _compactingTopbar = false;
+function _autoCompactTopbar() {
+  if (_compactingTopbar) return;
+  var topbar = document.getElementById('topbar');
+  if (!topbar) return;
+  var children = topbar.children;
+  if (children.length < 2) return;
+  _compactingTopbar = true;
+  try {
+    topbar.classList.remove('compact', 'compact-tight');
+    void topbar.offsetHeight;  // force layout flush after class reset
+    function isWrapped() {
+      var t0 = children[0].offsetTop;
+      for (var i = 1; i < children.length; i++) {
+        if (children[i].offsetTop !== t0) return true;
+      }
+      return false;
+    }
+    if (isWrapped()) {
+      topbar.classList.add('compact');
+      void topbar.offsetHeight;
+      if (isWrapped()) {
+        topbar.classList.add('compact-tight');
+      }
+    }
+  } finally {
+    // Release the guard on the next frame so a same-tick resize event
+    // (which fires from our own class change) doesn't recurse.
+    requestAnimationFrame(function() { _compactingTopbar = false; });
+  }
+}
+window.addEventListener('resize', _autoCompactTopbar);
+document.addEventListener('DOMContentLoaded', _autoCompactTopbar);
 
 function _showFilterPopup() {
   var pop = document.getElementById('filter-popup');
@@ -1242,7 +1276,10 @@ function _refreshTasks(force) {
     // sub-element, so they stay untouched (preserves filter focus / value).
     var freshPills = doc.querySelector('#topbar-pills');
     var curPills = document.getElementById('topbar-pills');
-    if (freshPills && curPills) curPills.innerHTML = freshPills.innerHTML;
+    if (freshPills && curPills) {
+      curPills.innerHTML = freshPills.innerHTML;
+      _autoCompactTopbar();  // pill width may have changed → re-check fit
+    }
     var fresh = doc.querySelector('#tasks-content');
     if (fresh) {
       document.getElementById('tasks-content').innerHTML = fresh.innerHTML;

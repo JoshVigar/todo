@@ -453,18 +453,22 @@ def test_topbar_pills_swapped_on_refresh(data):
     )
 
 
-def test_topbar_compacts_before_wrapping(data):
-    """Compaction breakpoints fire BEFORE the topbar would flex-wrap.
-    Default content width ≈ 990px, so the first compaction must trigger
-    above that (we use 1040px), then a tighter pass at 860px before wrap
-    becomes the last-resort fallback."""
+def test_autocompact_runs_on_load_and_resize_and_refresh(data):
+    """_autoCompactTopbar must wire into:
+      • DOMContentLoaded — initial measurement after first paint
+      • window resize    — re-evaluate when viewport changes
+      • _refreshTasks    — pill counts/widths can shift after mutation
+    """
     html = st.build_page(data, view="dashboard")
-    assert "@media (max-width: 1040px)" in html, (
-        "expected a 1040px max-width breakpoint — first compaction "
-        "should fire before the topbar would wrap (~990px)"
-    )
-    assert "@media (max-width: 860px)" in html, (
-        "expected an 860px breakpoint for tighter compaction"
+    assert "addEventListener('resize', _autoCompactTopbar)" in html
+    assert "addEventListener('DOMContentLoaded', _autoCompactTopbar)" in html
+    # Inside _refreshTasks, after pills swap, we should call it again.
+    refresh_idx = html.find("function _refreshTasks(")
+    assert refresh_idx > 0
+    # Look for the call to _autoCompactTopbar somewhere in _refreshTasks
+    end_idx = html.find("function ", refresh_idx + 10)
+    assert "_autoCompactTopbar()" in html[refresh_idx:end_idx], (
+        "_refreshTasks should re-evaluate compaction after swapping pills"
     )
 
 
@@ -479,14 +483,22 @@ def test_buttons_have_aria_labels_for_icon_only_state(data):
     assert 'class="btn-label">Sort</span>' in html
 
 
-def test_topbar_responsive_breakpoints_mobile_first(data):
-    """Default state is narrow (icon-only buttons); button labels are
-    revealed at ≥900px via min-width media query."""
+def test_topbar_compaction_is_content_driven_not_breakpoint(data):
+    """Compaction is JS-driven (measure-then-classify), not viewport-based.
+    Default has button labels visible; .compact / .compact-tight classes
+    apply progressively when JS detects the topbar has wrapped."""
     html = st.build_page(data, view="dashboard")
-    # Default rule hides the labels
-    assert ".btn-label { display: none; }" in html
-    # And the min-width override brings them back
-    assert "@media (min-width: 900px)" in html and "display: inline" in html
+    # Default visible — no display:none on .btn-label
+    assert ".btn-label { display: inline; }" in html
+    # JS function and the two compaction tiers exist
+    assert "function _autoCompactTopbar()" in html
+    assert "#topbar.compact " in html and "#topbar.compact-tight " in html
+    # The tier-1 class hides button labels (the cheapest space win)
+    assert "#topbar.compact .btn-label { display: none; }" in html
+    # No viewport-threshold media queries on .btn-label or the topbar tiers
+    assert "@media (min-width: 900px)" not in html
+    assert "@media (max-width: 1040px)" not in html
+    assert "@media (max-width: 860px)" not in html
 
 
 def test_topbar_uses_flex_wrap_for_extreme_narrow(data):
