@@ -605,9 +605,11 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 }
 #view-switcher .vs-btn:hover { color: #e6edf3; background: #21262d; text-decoration: none; }
 #view-switcher .vs-btn.active { background: #30363d; color: #e6edf3; }
-/* Two compaction tiers, applied by JS when the topbar would wrap.
- * Tier 1 (.compact):       hide button labels, tighten gaps and pill padding.
- * Tier 2 (.compact-tight): also shrink week title, view-switcher, pill font.
+/* Three compaction tiers, applied by JS when the topbar would wrap.
+ * Tier 1 (.compact):         hide button labels, tighten gaps and pill padding.
+ * Tier 2 (.compact-tight):   also shrink week title, view-switcher, pill font.
+ * Tier 3 (.compact-tightest): swap the tab-style view-switcher for a dropdown
+ *                             — saves the most horizontal space.
  * Selection is content-driven — see _autoCompactTopbar — not viewport-based. */
 #topbar.compact .btn-label { display: none; }
 #topbar.compact { gap: 8px; }
@@ -619,6 +621,16 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 #topbar.compact-tight #view-switcher .vs-btn { padding: 3px 8px; font-size: 11px; }
 #topbar.compact-tight #topbar-pills .cnt-group { padding: 3px 7px; gap: 7px; font-size: 11px; }
 #topbar.compact #filter-clear { padding: 3px 7px; font-size: 10px; }
+/* Dropdown view-switcher — only shown at tier 3. */
+#view-switcher-select {
+  display: none;  /* hidden until tier 3 swaps in */
+  background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+  color: #e6edf3; padding: 3px 8px; font-size: 12px; font-family: inherit;
+  flex-shrink: 0; cursor: pointer;
+}
+#view-switcher-select:focus { outline: none; border-color: #58a6ff; }
+#topbar.compact-tightest #view-switcher { display: none; }
+#topbar.compact-tightest #view-switcher-select { display: inline-block; }
 .counts-strip {
   display: flex; flex-wrap: wrap; gap: 8px;
   margin-bottom: 14px;
@@ -923,7 +935,7 @@ function _autoCompactTopbar() {
   if (children.length < 2) return;
   _compactingTopbar = true;
   try {
-    topbar.classList.remove('compact', 'compact-tight');
+    topbar.classList.remove('compact', 'compact-tight', 'compact-tightest');
     void topbar.offsetHeight;  // force layout flush after class reset
     function isWrapped() {
       var firstBottom = children[0].getBoundingClientRect().bottom;
@@ -940,6 +952,11 @@ function _autoCompactTopbar() {
       void topbar.offsetHeight;
       if (isWrapped()) {
         topbar.classList.add('compact-tight');
+        void topbar.offsetHeight;
+        if (isWrapped()) {
+          // Tier 3: swap tabs → dropdown for the biggest space win.
+          topbar.classList.add('compact-tightest');
+        }
       }
     }
   } finally {
@@ -950,6 +967,12 @@ function _autoCompactTopbar() {
 }
 window.addEventListener('resize', _autoCompactTopbar);
 document.addEventListener('DOMContentLoaded', _autoCompactTopbar);
+// Tier-3 dropdown: navigate when the user picks a different view.
+document.addEventListener('change', function(e) {
+  if (e.target && e.target.id === 'view-switcher-select') {
+    window.location.href = '?view=' + encodeURIComponent(e.target.value);
+  }
+});
 
 function _showFilterPopup() {
   var pop = document.getElementById('filter-popup');
@@ -2212,6 +2235,10 @@ def _view_switcher_html(current, week="", pills_html=""):
         f'<a href="?view={v}" class="vs-btn{" active" if v == current else ""}">{v.title()}</a>'
         for v in VIEWS
     )
+    select_options = "".join(
+        f'<option value="{v}"{" selected" if v == current else ""}>{v.title()}</option>'
+        for v in VIEWS
+    )
     week_num = week.lstrip("Ww") if week else ""
     week_title = (
         f'<span class="week-title">Week <span class="wk-num">{h(week_num)}</span></span>'
@@ -2221,6 +2248,7 @@ def _view_switcher_html(current, week="", pills_html=""):
         f'<div id="topbar">'
         f'{week_title}'
         f'<div id="view-switcher">{items}</div>'
+        f'<select id="view-switcher-select" aria-label="View">{select_options}</select>'
         f'<div id="topbar-pills">{pills_html}</div>'
         f'<div id="topbar-actions">'
         f'<button id="add-btn" title="Add task" aria-label="Add task">'

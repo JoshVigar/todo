@@ -508,20 +508,67 @@ def test_buttons_have_aria_labels_for_icon_only_state(data):
 
 def test_topbar_compaction_is_content_driven_not_breakpoint(data):
     """Compaction is JS-driven (measure-then-classify), not viewport-based.
-    Default has button labels visible; .compact / .compact-tight classes
-    apply progressively when JS detects the topbar has wrapped."""
+    Default has button labels visible; three .compact tiers apply
+    progressively when JS detects the topbar has wrapped."""
     html = st.build_page(data, view="dashboard")
     # Default visible — no display:none on .btn-label
     assert ".btn-label { display: inline; }" in html
-    # JS function and the two compaction tiers exist
+    # JS function and all three compaction tiers exist
     assert "function _autoCompactTopbar()" in html
     assert "#topbar.compact " in html and "#topbar.compact-tight " in html
+    assert "#topbar.compact-tightest " in html
     # The tier-1 class hides button labels (the cheapest space win)
     assert "#topbar.compact .btn-label { display: none; }" in html
     # No viewport-threshold media queries on .btn-label or the topbar tiers
     assert "@media (min-width: 900px)" not in html
     assert "@media (max-width: 1040px)" not in html
     assert "@media (max-width: 860px)" not in html
+
+
+def test_view_switcher_dropdown_for_tier3(data):
+    """Tier 3 (.compact-tightest) hides the tab-style switcher and reveals
+    a <select> dropdown that navigates on change. The select renders both
+    options (Dashboard / Classic) with the current view marked selected."""
+    html = st.build_page(data, view="dashboard")
+    # The select element itself
+    assert 'id="view-switcher-select"' in html
+    # Both view options rendered
+    assert '<option value="dashboard"' in html
+    assert '<option value="classic"' in html
+    # Current view marked selected
+    assert '<option value="dashboard" selected>' in html
+    # Hidden by default; revealed at tier 3
+    assert "#view-switcher-select {" in html
+    assert "#topbar.compact-tightest #view-switcher { display: none; }" in html
+    assert "#topbar.compact-tightest #view-switcher-select { display: inline-block; }" in html
+    # Change handler navigates
+    assert "view-switcher-select" in html and "window.location.href" in html
+
+
+def test_autocompact_resets_all_three_tiers(data):
+    """When re-measuring, _autoCompactTopbar must clear all three tier
+    classes (not just tier 1+2) before deciding what to apply."""
+    html = st.build_page(data, view="dashboard")
+    assert (
+        "topbar.classList.remove('compact', 'compact-tight', 'compact-tightest')"
+        in html
+    ), "reset must clear all three compaction tiers before re-measuring"
+
+
+def test_autocompact_escalates_to_tier3_when_tier2_still_wraps(data):
+    """If .compact-tight is applied and isWrapped() still returns true,
+    .compact-tightest is added as the final tier."""
+    html = st.build_page(data, view="dashboard")
+    # The escalation chain must include three nested isWrapped() checks
+    fn_idx = html.find("function _autoCompactTopbar()")
+    fn_end = html.find(
+        "window.addEventListener('resize', _autoCompactTopbar)", fn_idx
+    )
+    body = html[fn_idx:fn_end]
+    assert body.count("isWrapped()") >= 3, (
+        "expected three isWrapped() calls — one per tier escalation"
+    )
+    assert "compact-tightest" in body
 
 
 def test_topbar_uses_flex_wrap_for_extreme_narrow(data):
