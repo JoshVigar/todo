@@ -336,7 +336,7 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
   color: #8b949e; letter-spacing: 0.02em; text-transform: none;
 }
 #task-filter {
-  flex: 1; max-width: 280px; margin-left: auto;
+  max-width: 280px;  /* sits right next to #topbar-actions; gap from the topbar flex */
   background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
   color: #e6edf3; padding: 4px 10px; font-size: 12px;
   font-family: inherit;
@@ -480,7 +480,7 @@ a:hover { text-decoration: underline; }
 p.counts { margin: 6px 0; color: #8b949e; font-size: 12px; }
 #topbar-actions {
   display: inline-flex; gap: 8px;
-  margin-left: 16px;  /* breathing room separating actions from the view-switcher pill */
+  margin-left: auto;  /* pushes the actions + filter cluster to the right edge */
 }
 #sort-btn, #add-btn {
   /* Match the view-switcher's outer height: 3px wrapper-pad + 4px btn-pad + ~14px line. */
@@ -2069,6 +2069,9 @@ def _view_switcher_html(current, week=""):
         f'autocomplete="off" spellcheck="false">'
         f'</div>'
     )
+
+# (DOM order: actions group sits just before the filter input. CSS uses
+# margin-left: auto on the actions to push the cluster to the right edge.)
 
 
 def build_page(data, view="dashboard"):
