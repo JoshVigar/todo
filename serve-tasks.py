@@ -1683,8 +1683,11 @@ def render_counts_strip(data):
     # Priority group — colour dots speak for themselves, no label needed.
     # Each `<span class="stat">` carries data-filter-* so a click filters the
     # task list to that priority. Multiple selected pills combine (OR).
+    # `data-tip` drives the instant custom tooltip (no native ~500ms delay).
+    pri_labels = {"P1": "Critical", "P2": "High", "P3": "Medium", "P4": "Low", "P5": "Paused"}
     pri_stats = "".join(
-        f'<span class="stat" data-filter-key="pri" data-filter-val="{p}" title="Filter to {p}">'
+        f'<span class="stat" data-filter-key="pri" data-filter-val="{p}" '
+        f'data-tip="{p} {pri_labels[p]} — {pri[p]} task{"" if pri[p]==1 else "s"} (click to filter)">'
         f'<span class="dot" style="background:{pri_colors[p]}"></span>{pri[p]}</span>'
         for p in ("P1", "P2", "P3", "P4", "P5") if pri[p]
     )
@@ -1693,22 +1696,31 @@ def render_counts_strip(data):
 
     # Status group
     status_stats = []
-    if status["in_progress"]: status_stats.append(f'<span class="stat" data-filter-key="status" data-filter-val="in_progress" title="Filter to In progress"><span class="icon">🔄</span>{status["in_progress"]}</span>')
-    if status["waiting"]:     status_stats.append(f'<span class="stat" data-filter-key="status" data-filter-val="waiting" title="Filter to Waiting"><span class="icon">⏳</span>{status["waiting"]}</span>')
-    if status["blocked"]:     status_stats.append(f'<span class="stat" data-filter-key="status" data-filter-val="blocked" title="Filter to Blocked"><span class="icon">🚫</span>{status["blocked"]}</span>')
+    def _status_pill(key, icon, label, n):
+        return (
+            f'<span class="stat" data-filter-key="status" data-filter-val="{key}" '
+            f'data-tip="{label} — {n} task{"" if n==1 else "s"} (click to filter)">'
+            f'<span class="icon">{icon}</span>{n}</span>'
+        )
+    if status["in_progress"]: status_stats.append(_status_pill("in_progress", "🔄", "In progress", status["in_progress"]))
+    if status["waiting"]:     status_stats.append(_status_pill("waiting",     "⏳", "Waiting",     status["waiting"]))
+    if status["blocked"]:     status_stats.append(_status_pill("blocked",     "🚫", "Blocked",     status["blocked"]))
     if status_stats:
         groups.append(f'<div class="cnt-group">{"".join(status_stats)}</div>')
 
     # Overdue (only show if non-zero)
     if overdue:
-        groups.append(f'<div class="cnt-group alert"><span class="stat" data-filter-key="flag" data-filter-val="overdue" title="Filter to overdue"><span class="icon">⚠️</span>{overdue} overdue</span></div>')
+        tip = f"Overdue — {overdue} task{'' if overdue==1 else 's'} past their due date (click to filter)"
+        groups.append(f'<div class="cnt-group alert"><span class="stat" data-filter-key="flag" data-filter-val="overdue" data-tip="{tip}"><span class="icon">⚠️</span>{overdue} overdue</span></div>')
 
     # Stale (only show if any task ≥14 days old — ADHD-friendly drift detector)
     if stale:
-        groups.append(f'<div class="cnt-group alert"><span class="stat" data-filter-key="flag" data-filter-val="stale" title="Filter to stale"><span class="icon">🧹</span>{stale} stale</span></div>')
+        tip = f"Stale — {stale} task{'' if stale==1 else 's'} added ≥14 days ago (click to filter)"
+        groups.append(f'<div class="cnt-group alert"><span class="stat" data-filter-key="flag" data-filter-val="stale" data-tip="{tip}"><span class="icon">🧹</span>{stale} stale</span></div>')
 
     # Done today (always show — small dopamine hit when it's >0)
-    groups.append(f'<div class="cnt-group success"><span class="stat"><span class="icon">✅</span>{done} done today</span></div>')
+    tip = f"Done today — {done} task{'' if done==1 else 's'} completed today"
+    groups.append(f'<div class="cnt-group success"><span class="stat" data-tip="{tip}"><span class="icon">✅</span>{done} done today</span></div>')
 
     # Clear-filters button — sits inline with the pills, JS toggles visibility.
     # data-action wired to the global click handler so it survives DOM swaps.
