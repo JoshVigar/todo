@@ -346,6 +346,7 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
   display: none; background: transparent; border: 1px solid #30363d;
   color: #8b949e; padding: 4px 10px; border-radius: 6px;
   cursor: pointer; font-size: 11px; font-family: inherit;
+  margin-left: auto;  /* push to the far right of the counts strip */
 }
 #filter-clear:hover { color: #e6edf3; border-color: #484f58; }
 .filtered-out { display: none !important; }
@@ -477,16 +478,13 @@ tr.expanded { background: rgba(56, 139, 253, 0.04); }
 a { color: #58a6ff; text-decoration: none; cursor: pointer; }
 a:hover { text-decoration: underline; }
 p.counts { margin: 6px 0; color: #8b949e; font-size: 12px; }
-#floating-actions {
-  position: fixed; top: 16px; right: 16px; z-index: 50;
-  display: flex; gap: 8px;
-}
+#topbar-actions { display: inline-flex; gap: 6px; }
 #sort-btn, #add-btn {
   background: #1c2128; border: 1px solid #30363d;
-  color: #e6edf3; padding: 8px 14px; border-radius: 8px;
-  cursor: pointer; font-size: 13px; font-weight: 600;
+  color: #e6edf3; padding: 4px 12px; border-radius: 6px;
+  cursor: pointer; font-size: 12px; font-weight: 600;
   letter-spacing: 0.02em;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  font-family: inherit;
 }
 #sort-btn:hover, #add-btn:hover { background: #2d333b; border-color: #484f58; }
 #add-btn { color: #3fb950; }
@@ -823,8 +821,6 @@ function _clearFilters() {
 (function() {
   var input = document.getElementById('task-filter');
   if (input) input.addEventListener('input', _applyFilter);
-  var clearBtn = document.getElementById('filter-clear');
-  if (clearBtn) clearBtn.addEventListener('click', _clearFilters);
 })();
 
 // Toggle every expandable row in `scope` (defaults to whole document).
@@ -851,6 +847,13 @@ function _toggleExpandAll(scope) {
 }
 
 document.addEventListener('click', function(e) {
+  // Clear-filters button (lives inside #tasks-content, swapped each refresh)
+  if (e.target.closest('[data-action="clear-filters"]')) {
+    e.preventDefault();
+    _clearFilters();
+    return;
+  }
+
   // Counts-strip pill click → toggle a filter. Multiple pills combine.
   var pill = e.target.closest('[data-filter-key]');
   if (pill) {
@@ -1707,6 +1710,10 @@ def render_counts_strip(data):
     # Done today (always show — small dopamine hit when it's >0)
     groups.append(f'<div class="cnt-group success"><span class="stat"><span class="icon">✅</span>{done} done today</span></div>')
 
+    # Clear-filters button — sits inline with the pills, JS toggles visibility.
+    # data-action wired to the global click handler so it survives DOM swaps.
+    groups.append('<button id="filter-clear" data-action="clear-filters" title="Clear filters">✕ Clear</button>')
+
     return f'<div class="counts-strip">{"".join(groups)}</div>\n'
 
 
@@ -2038,9 +2045,12 @@ def _view_switcher_html(current, week=""):
         f'<div id="topbar">'
         f'{week_title}'
         f'<div id="view-switcher">{items}</div>'
+        f'<div id="topbar-actions">'
+        f'<button id="add-btn">+ Add</button>'
+        f'<button id="sort-btn">⇕ Sort</button>'
+        f'</div>'
         f'<input id="task-filter" type="text" placeholder="Filter tasks ( / )" '
         f'autocomplete="off" spellcheck="false">'
-        f'<button id="filter-clear" title="Clear filters">✕ Clear</button>'
         f'</div>'
     )
 
@@ -2057,10 +2067,6 @@ def build_page(data, view="dashboard"):
         f'<meta name="tasks-view" content="{view}">'
         f'<title>Tasks</title><style>{CSS}</style>'
         f'</head><body>{switcher}<div id="tasks-content">{body}</div>'
-        f'<div id="floating-actions">'
-        f'<button id="add-btn">+ Add</button>'
-        f'<button id="sort-btn">⇕ Sort</button>'
-        f'</div>'
         f'<div id="modal-overlay"><div id="modal">'
         f'<h3>Add Task</h3>'
         f'<label>Task name</label>'
