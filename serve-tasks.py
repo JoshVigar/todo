@@ -366,7 +366,10 @@ tr.row-due-soon .due { color: #e3b341; font-weight: 600; }
   color: #8b949e; letter-spacing: 0.02em; text-transform: none;
 }
 #task-filter {
-  max-width: 280px;  /* sits right next to #topbar-actions; gap from the topbar flex */
+  /* Absorbs spare space — pushes the cluster right naturally without
+   * margin-left:auto, which interacts badly with flex-wrap. */
+  flex: 1 1 200px; max-width: 280px; min-width: 160px;
+  margin-left: auto;
   background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
   color: #e6edf3; padding: 4px 10px; font-size: 12px;
   font-family: inherit;
@@ -509,20 +512,31 @@ a { color: #58a6ff; text-decoration: none; cursor: pointer; }
 a:hover { text-decoration: underline; }
 p.counts { margin: 6px 0; color: #8b949e; font-size: 12px; }
 #topbar-actions {
-  display: inline-flex; gap: 8px;
-  margin-left: auto;  /* pushes the actions + filter cluster to the right edge */
+  display: inline-flex; gap: 8px; flex-shrink: 0;
 }
 #sort-btn, #add-btn {
-  /* Match the view-switcher's outer height: 3px wrapper-pad + 4px btn-pad + ~14px line. */
   background: #0d1117; border: 1px solid #30363d;
   color: #c9d1d9; padding: 6px 14px; border-radius: 6px;
   cursor: pointer; font-size: 12px; font-weight: 600;
   letter-spacing: 0.02em; font-family: inherit;
   line-height: 1; box-shadow: 0 1px 0 rgba(255,255,255,0.02) inset;
+  display: inline-flex; align-items: center; gap: 6px;
 }
 #sort-btn:hover, #add-btn:hover { background: #21262d; border-color: #484f58; color: #e6edf3; }
 #add-btn { color: #3fb950; border-color: rgba(63,185,80,0.35); }
 #add-btn:hover { background: rgba(63,185,80,0.12); border-color: rgba(63,185,80,0.6); color: #3fb950; }
+.btn-icon { font-weight: 700; }
+/* Mobile-first: hide button text by default; show on wider widths */
+.btn-label { display: none; }
+@media (min-width: 900px) { .btn-label { display: inline; } }
+/* Topbar pills wrapper — the counts strip lives here */
+#topbar-pills {
+  display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  flex-shrink: 1; min-width: 0;
+}
+#topbar-pills .counts-strip {
+  display: inline-flex; flex-wrap: wrap; gap: 8px; margin: 0; align-items: center;
+}
 #modal-overlay {
   display: none; position: fixed; inset: 0; z-index: 100;
   background: rgba(0,0,0,0.6); align-items: center; justify-content: center;
@@ -558,17 +572,21 @@ tr.dragging { opacity: 0.3; }
 tr.drag-over-top > td { border-top: 2px solid #388bfd !important; }
 tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 #topbar {
-  display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap; row-gap: 6px;  /* fallback at extreme-narrow widths */
+  margin-bottom: 10px;
 }
 .week-title {
   font-size: 22px; font-weight: 700; letter-spacing: 0.01em;
   color: #e6edf3; margin-right: 4px;
+  flex-shrink: 0;
 }
 .week-title .wk-num { color: #3fb950; }
 #view-switcher {
   display: flex; gap: 4px;
   background: #161b22; border: 1px solid #30363d; border-radius: 6px;
   padding: 3px; width: fit-content;
+  flex-shrink: 0;
 }
 #view-switcher .vs-btn {
   padding: 4px 12px; border-radius: 4px;
@@ -1176,6 +1194,12 @@ function _refreshTasks(force) {
   }).then(function(html) {
     if (!html) return;
     var doc = new DOMParser().parseFromString(html, 'text/html');
+    // Swap the topbar pills (counts strip) so they reflect new state.
+    // Filter input + week badge live in the same #topbar but outside this
+    // sub-element, so they stay untouched (preserves filter focus / value).
+    var freshPills = doc.querySelector('#topbar-pills');
+    var curPills = document.getElementById('topbar-pills');
+    if (freshPills && curPills) curPills.innerHTML = freshPills.innerHTML;
     var fresh = doc.querySelector('#tasks-content');
     if (fresh) {
       document.getElementById('tasks-content').innerHTML = fresh.innerHTML;
@@ -2007,7 +2031,7 @@ def render_compact_completed(tasks):
 VIEWS = ["dashboard", "classic"]
 
 def _build_dashboard_body(data, week):
-    parts = [render_counts_strip(data)]
+    parts = []  # counts strip now lives in the topbar (see _view_switcher_html)
 
     def card(html, variant=""):
         if not html:
@@ -2061,8 +2085,9 @@ def _build_dashboard_body(data, week):
 
 
 def _build_classic_body(data, week):
-    """Single-column view: counts strip + each section wrapped in a task-card, stacked."""
-    parts = [render_counts_strip(data)]
+    """Single-column view: each section wrapped in a task-card, stacked.
+    (Counts strip now lives in the topbar — see `_view_switcher_html`.)"""
+    parts = []
 
     def card(html, variant=""):
         if not html:
@@ -2092,7 +2117,7 @@ def _build_classic_body(data, week):
     return "".join(parts)
 
 
-def _view_switcher_html(current, week=""):
+def _view_switcher_html(current, week="", pills_html=""):
     items = "".join(
         f'<a href="?view={v}" class="vs-btn{" active" if v == current else ""}">{v.title()}</a>'
         for v in VIEWS
@@ -2106,17 +2131,17 @@ def _view_switcher_html(current, week=""):
         f'<div id="topbar">'
         f'{week_title}'
         f'<div id="view-switcher">{items}</div>'
+        f'<div id="topbar-pills">{pills_html}</div>'
         f'<div id="topbar-actions">'
-        f'<button id="add-btn">+ Add</button>'
-        f'<button id="sort-btn">⇕ Sort</button>'
+        f'<button id="add-btn" title="Add task" aria-label="Add task">'
+        f'<span class="btn-icon">+</span><span class="btn-label">Add</span></button>'
+        f'<button id="sort-btn" title="Sort by priority" aria-label="Sort by priority">'
+        f'<span class="btn-icon">⇕</span><span class="btn-label">Sort</span></button>'
         f'</div>'
         f'<input id="task-filter" type="text" placeholder="Filter tasks ( / )" '
         f'autocomplete="off" spellcheck="false">'
         f'</div>'
     )
-
-# (DOM order: actions group sits just before the filter input. CSS uses
-# margin-left: auto on the actions to push the cluster to the right edge.)
 
 
 def build_page(data, view="dashboard"):
@@ -2124,7 +2149,7 @@ def build_page(data, view="dashboard"):
         view = "dashboard"
     week = data.get("week", "")
     body = _build_classic_body(data, week) if view == "classic" else _build_dashboard_body(data, week)
-    switcher = _view_switcher_html(view, week)
+    switcher = _view_switcher_html(view, week, pills_html=render_counts_strip(data))
     return (
         f'<!DOCTYPE html><html><head>'
         f'<meta charset="utf-8">'
@@ -2169,7 +2194,7 @@ def build_page(data, view="dashboard"):
         f'<tr><td>Submit Add modal</td><td><kbd>⌘</kbd>+<kbd>Enter</kbd></td></tr>'
         f'<tr><td>Toggle dashboard / classic view</td><td><kbd>c</kbd></td></tr>'
         f'<tr><td>Focus filter input</td><td><kbd>/</kbd></td></tr>'
-        f'<tr><td>Click counts-strip pill to filter (multi-select)</td><td>—</td></tr>'
+        f'<tr><td>Click topbar pill to filter (multi-select)</td><td>—</td></tr>'
         f'<tr><td>Highlight next row</td><td><kbd>j</kbd> <kbd>↓</kbd></td></tr>'
         f'<tr><td>Highlight previous row</td><td><kbd>k</kbd> <kbd>↑</kbd></td></tr>'
         f'<tr><td>Expand / collapse highlighted row</td><td><kbd>Enter</kbd></td></tr>'

@@ -379,6 +379,75 @@ def test_clearfilters_resets_text_and_pills(data):
     assert "_pillFilters.clear()" in html
 
 
+def test_pills_render_inside_topbar(data):
+    """Counts-strip pills now live inside #topbar-pills; the standalone
+    counts-strip is no longer prepended to the body."""
+    html = st.build_page(data, view="dashboard")
+    # The topbar-pills wrapper exists
+    assert 'id="topbar-pills"' in html
+    # And it contains the actual counts-strip markup
+    pills_idx = html.find('id="topbar-pills"')
+    next_div = html.find("</div>", pills_idx)
+    assert "counts-strip" in html[pills_idx:next_div + 6], (
+        "counts-strip should be rendered inside #topbar-pills"
+    )
+    # The body shouldn't prepend a counts-strip anymore (so it's not duplicated)
+    body_idx = html.find('id="tasks-content"')
+    body_chunk = html[body_idx:body_idx + 200]
+    assert "counts-strip" not in body_chunk, (
+        "counts-strip should no longer be at the top of #tasks-content"
+    )
+
+
+def test_topbar_pills_swapped_on_refresh(data):
+    """_refreshTasks must swap #topbar-pills innerHTML alongside
+    #tasks-content; otherwise the pills (counts, alert badges) go stale
+    after every mutation."""
+    html = st.build_page(data, view="dashboard")
+    # Look for the two-step swap pattern in the JS
+    assert "querySelector('#topbar-pills')" in html, (
+        "_refreshTasks should swap #topbar-pills"
+    )
+    # And the swap happens before the #tasks-content swap (so filter input
+    # state — which lives in the same #topbar — isn't disturbed)
+    pills_swap = html.find("querySelector('#topbar-pills')")
+    content_swap = html.find("querySelector('#tasks-content')")
+    assert 0 < pills_swap < content_swap, (
+        "topbar-pills swap should appear before #tasks-content swap in the JS"
+    )
+
+
+def test_buttons_have_aria_labels_for_icon_only_state(data):
+    """At narrow viewport, .btn-label is hidden via media query — the
+    button needs an accessible name (aria-label / title) for icon-only state."""
+    html = st.build_page(data, view="dashboard")
+    assert 'id="add-btn" title="Add task" aria-label="Add task"' in html
+    assert 'id="sort-btn" title="Sort by priority" aria-label="Sort by priority"' in html
+    # The text label is wrapped so it can be hidden by CSS independently
+    assert 'class="btn-label">Add</span>' in html
+    assert 'class="btn-label">Sort</span>' in html
+
+
+def test_topbar_responsive_breakpoints_mobile_first(data):
+    """Default state is narrow (icon-only buttons); button labels are
+    revealed at ≥900px via min-width media query."""
+    html = st.build_page(data, view="dashboard")
+    # Default rule hides the labels
+    assert ".btn-label { display: none; }" in html
+    # And the min-width override brings them back
+    assert "@media (min-width: 900px)" in html and "display: inline" in html
+
+
+def test_topbar_uses_flex_wrap_for_extreme_narrow(data):
+    """At very narrow viewports the topbar wraps to a second row instead
+    of overflowing horizontally."""
+    html = st.build_page(data, view="dashboard")
+    # The #topbar selector body must contain flex-wrap: wrap
+    idx = html.find("#topbar {")
+    chunk = html[idx:idx + 300]
+    assert "flex-wrap: wrap" in chunk, "topbar should allow wrap as fallback"
+
+
 def test_pill_matcher_or_within_and_across():
     """The pill matcher must use OR within a key and AND across keys.
     Selecting `pri:P1` AND `status:waiting` should ONLY match rows that are
