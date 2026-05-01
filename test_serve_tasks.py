@@ -379,6 +379,90 @@ def test_clearfilters_resets_text_and_pills(data):
     assert "_pillFilters.clear()" in html
 
 
+def test_pill_matcher_or_within_and_across():
+    """The pill matcher must use OR within a key and AND across keys.
+    Selecting `pri:P1` AND `status:waiting` should ONLY match rows that are
+    P1 priority AND waiting status — not their union."""
+    P1_open       = {"pri": "P1", "status": "open"}
+    P1_waiting    = {"pri": "P1", "status": "waiting"}
+    P3_waiting    = {"pri": "P3", "status": "waiting"}
+    P2_blocked    = {"pri": "P2", "status": "blocked"}
+
+    # Single pill = single-key filter
+    assert st._match_pills(P1_open, ["pri:P1"]) is True
+    assert st._match_pills(P3_waiting, ["pri:P1"]) is False
+
+    # OR within a key: P1 OR P2
+    assert st._match_pills(P1_open, ["pri:P1", "pri:P2"]) is True
+    assert st._match_pills(P2_blocked, ["pri:P1", "pri:P2"]) is True
+    assert st._match_pills(P3_waiting, ["pri:P1", "pri:P2"]) is False
+
+    # AND across keys: pri:P1 AND status:waiting
+    assert st._match_pills(P1_waiting, ["pri:P1", "status:waiting"]) is True
+    assert st._match_pills(P1_open,    ["pri:P1", "status:waiting"]) is False
+    assert st._match_pills(P3_waiting, ["pri:P1", "status:waiting"]) is False
+
+    # Three keys: pri (P1 or P2) AND status:waiting AND flag:stale
+    stale_p1_waiting = {"pri": "P1", "status": "waiting", "stale": True}
+    stale_p3_waiting = {"pri": "P3", "status": "waiting", "stale": True}
+    assert st._match_pills(stale_p1_waiting, ["pri:P1", "pri:P2", "status:waiting", "flag:stale"]) is True
+    assert st._match_pills(stale_p3_waiting, ["pri:P1", "pri:P2", "status:waiting", "flag:stale"]) is False
+
+    # Empty filter set always matches
+    assert st._match_pills({"pri": "P5"}, []) is True
+
+
+def test_pill_matcher_overdue_and_stale_flags():
+    """`flag:overdue` matches `overdue=True`; `flag:stale` matches `stale=True`."""
+    overdue = {"pri": "P2", "status": "open", "overdue": True}
+    stale = {"pri": "P3", "status": "open", "stale": True}
+    both  = {"pri": "P3", "status": "open", "overdue": True, "stale": True}
+    neither = {"pri": "P3", "status": "open"}
+    assert st._match_pills(overdue, ["flag:overdue"]) is True
+    assert st._match_pills(stale,   ["flag:overdue"]) is False
+    assert st._match_pills(stale,   ["flag:stale"]) is True
+    # OR within flag
+    assert st._match_pills(stale,   ["flag:overdue", "flag:stale"]) is True
+    assert st._match_pills(overdue, ["flag:overdue", "flag:stale"]) is True
+    assert st._match_pills(neither, ["flag:overdue", "flag:stale"]) is False
+    assert st._match_pills(both,    ["flag:overdue", "flag:stale"]) is True
+
+
+def test_js_matcher_mirrors_python_matcher(data):
+    """The JS `_rowMatchesPills` implementation should follow the same
+    OR-within / AND-across rule as the Python `_match_pills`. Spot-check
+    the JS source contains the bucketing idiom."""
+    html = st.build_page(data, view="dashboard")
+    # The fixed implementation buckets by key into byKey
+    assert "byKey" in html, "JS matcher should bucket pill filters by key"
+    # And short-circuits on missing keys with `return false`
+    assert "byKey.pri.length" in html
+    assert "byKey.status.length" in html
+    assert "byKey.flag.length" in html
+
+
+def test_clear_button_uses_explicit_display_value(data):
+    """Regression for 95a9063: setting style.display = '' lets the CSS
+    default (display: none) win, so the button stayed hidden. The JS must
+    set an explicit value like 'inline-block'."""
+    html = st.build_page(data, view="dashboard")
+    assert "anyFilter ? 'inline-block' : 'none'" in html or \
+           "anyFilter ? \"inline-block\" : \"none\"" in html, (
+        "filter-clear must use an explicit display value, not ''"
+    )
+    # And the buggy variant must not be present
+    assert "anyFilter ? '' :" not in html
+
+
+def test_goalie_rows_have_no_rename_pencil(data):
+    """Rename-pencil should not appear on goalie tasks (no /rename support
+    for them). Render a goalie section and confirm."""
+    html = st.render_goalie_section("Goalie", [
+        {"id": 999, "task": "ping triage queue", "links": [], "status": "open"},
+    ])
+    assert "rename-pencil" not in html, "rename pencil leaking into goalie section"
+
+
 def test_filter_data_attrs_helper(data):
     """`_filter_data_attrs(task)` returns `data-pri`, `data-status`, and
     `data-stale="1"` when the task is ≥14d old."""

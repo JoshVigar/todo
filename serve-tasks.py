@@ -225,6 +225,36 @@ def _insert_under_dated_section(lines, section_title, dated_line, today_str, *, 
         lines.insert(section_idx + 1, "")
 
 
+def _match_pills(row, pill_filters):
+    """Mirror of the JS `_rowMatchesPills`. `row` is a dict with `pri`,
+    `status`, `stale` (bool), `overdue` (bool); `pill_filters` is an iterable
+    of `key:val` strings. Semantics: OR within key, AND across keys.
+
+    The Python version exists so the matcher can be unit-tested and to
+    pin the contract — the JS implementation must produce identical output."""
+    pf = list(pill_filters)
+    if not pf:
+        return True
+    by_key = {"pri": [], "status": [], "flag": []}
+    for entry in pf:
+        if ":" not in entry:
+            continue
+        k, v = entry.split(":", 1)
+        if k in by_key:
+            by_key[k].append(v)
+    if by_key["pri"] and (row.get("pri") or "") not in by_key["pri"]:
+        return False
+    if by_key["status"] and (row.get("status") or "") not in by_key["status"]:
+        return False
+    if by_key["flag"]:
+        flags = []
+        if row.get("overdue"): flags.append("overdue")
+        if row.get("stale"):   flags.append("stale")
+        if not any(v in flags for v in by_key["flag"]):
+            return False
+    return True
+
+
 def _filter_data_attrs(task):
     """Per-row data-* attributes the JS filter logic reads.
     `data-pri` / `data-status` for pill matching; `data-stale="1"` if the
@@ -763,20 +793,28 @@ var _pillFilters = new Set();
 
 function _rowMatchesPills(row) {
   if (_pillFilters.size === 0) return true;
+  // Bucket selected pills by key. Semantic: OR within a key (any selected
+  // P1/P2 matches); AND across keys (must satisfy every key that has at
+  // least one selected pill). Mirrors `_match_pills` in serve-tasks.py.
+  var byKey = {pri: [], status: [], flag: []};
+  _pillFilters.forEach(function(entry) {
+    var idx = entry.indexOf(':');
+    var k = entry.slice(0, idx), v = entry.slice(idx + 1);
+    if (byKey[k]) byKey[k].push(v);
+  });
   var pri = row.dataset.pri || '';
   var status = row.dataset.status || '';
   var stale = row.dataset.stale === '1';
   var overdue = row.classList.contains('row-overdue');
-  var matched = false;
-  _pillFilters.forEach(function(entry) {
-    var idx = entry.indexOf(':');
-    var key = entry.slice(0, idx), val = entry.slice(idx + 1);
-    if (key === 'pri' && pri === val) matched = true;
-    else if (key === 'status' && status === val) matched = true;
-    else if (key === 'flag' && val === 'overdue' && overdue) matched = true;
-    else if (key === 'flag' && val === 'stale' && stale) matched = true;
-  });
-  return matched;
+  if (byKey.pri.length && byKey.pri.indexOf(pri) === -1) return false;
+  if (byKey.status.length && byKey.status.indexOf(status) === -1) return false;
+  if (byKey.flag.length) {
+    var anyFlag = byKey.flag.some(function(v) {
+      return (v === 'overdue' && overdue) || (v === 'stale' && stale);
+    });
+    if (!anyFlag) return false;
+  }
+  return true;
 }
 
 function _applyFilter() {
@@ -1292,13 +1330,20 @@ document.addEventListener('keydown', function(e) {
   var inInput = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
                       t.tagName === 'SELECT' || t.isContentEditable);
 
-  // Esc always handled — closes overlays / clears all filters
+  // Esc always handled — narrow rules so it does the least surprising thing:
+  //   in filter input + has text  → clear the text (keep pills, keep focus)
+  //   in filter input + no text   → blur the input (keep pills)
+  //   not in filter + any filter  → clear all filters
+  //   else                        → collapse expanded rows
   if (e.key === 'Escape') {
     if (help && help.classList.contains('open')) { _closeHelp(); return; }
     var fi2 = document.getElementById('task-filter');
-    var hasFilter = (fi2 && fi2.value) || _pillFilters.size > 0;
-    if (hasFilter || (fi2 && t === fi2)) {
-      if (fi2) fi2.blur();
+    if (fi2 && t === fi2) {
+      if (fi2.value) { fi2.value = ''; _applyFilter(); }
+      else { fi2.blur(); }
+      return;
+    }
+    if ((fi2 && fi2.value) || _pillFilters.size > 0) {
       _clearFilters();
       return;
     }
