@@ -7,6 +7,9 @@ waiting.md
 tasks-live.json
 tasks-live.md
 serve-tasks-requests.log
+slack-triage.json
+slack-dismissed.jsonl
+slack-converted.jsonl
 .claude/
 
 # Python
