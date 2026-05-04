@@ -1787,7 +1787,7 @@ function _openSlackConvertModal(item) {
 }
 
 document.addEventListener('click', function(e) {
-  // Convert button → open modal pre-filled
+  // Convert button → open modal pre-filled, OR quick-add when ⌘/Ctrl held
   var convertBtn = e.target.closest('.slack-convert');
   if (convertBtn) {
     e.preventDefault();
@@ -1795,6 +1795,29 @@ document.addEventListener('click', function(e) {
     var row = convertBtn.closest('.slack-row');
     if (!row) return;
     var item = _slackItems()[row.dataset.id];
+    if (!item) return;
+    if (e.metaKey || e.ctrlKey) {
+      // Quick-add: bypass modal, POST /slack/convert directly with the
+      // same defaults the modal would have populated. Useful when the
+      // pre-fill is good enough as-is and the modal is just friction.
+      var sender = item.sender || '';
+      var name = item.is_dm
+        ? 'Reply to ' + sender
+        : 'Reply to ' + sender + ' in #' + (item.channel_name || '');
+      var quickPayload = {
+        id: (item.channel_id || '') + ':' + (item.message_ts || ''),
+        task: name,
+        pri: 'P2',
+        due: '—',
+        why: item.snippet || '—',
+        link_label: 'Slack',
+        link_url: item.permalink || ''
+      };
+      _post('/slack/convert', quickPayload).then(function(r) {
+        if (r.ok) row.remove();
+      });
+      return;
+    }
     _openSlackConvertModal(item);
     return;
   }

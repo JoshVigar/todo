@@ -1873,6 +1873,23 @@ def test_slack_log_compaction_drops_expired(slack_state, monkeypatch):
     assert all(not k.startswith("C1:OLD") for k in ids)
 
 
+def test_slack_convert_quick_add_modifier_bypasses_modal(data, slack_state):
+    """⌘/Ctrl+click on Convert posts /slack/convert directly without opening
+    the modal. The defaults match what the modal would have populated."""
+    snap = _slack_snapshot(items=[_slack_item()])
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    # Modifier check is present in the JS click handler
+    assert "e.metaKey || e.ctrlKey" in html
+    # Quick-add path posts to /slack/convert
+    assert "_post('/slack/convert', quickPayload)" in html
+    # Defaults match the modal pre-fill
+    assert "pri: 'P2'" in html
+    assert "link_label: 'Slack'" in html
+    # DM vs channel name uses the same is_dm branch as the modal
+    assert "item.is_dm" in html and "'Reply to '" in html
+
+
 def test_slack_dismiss_route_passes_scope(isolated_state, slack_state):
     """The /slack/dismiss route must forward scope=thread to apply_slack_dismiss
     so the JSONL line carries kind=thread."""
