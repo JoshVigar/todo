@@ -1421,3 +1421,341 @@ def test_help_overlay_is_sectioned(data):
         )
     # Edit hotkey is documented in the new Mutate section
     assert "Edit task (modal)" in html and "<kbd>e</kbd>" in html
+
+
+# ---------------------------------------------------------------------------
+# Slack triage view
+# ---------------------------------------------------------------------------
+
+def _slack_snapshot(items=None, generated_at=None, noise=None, version=1):
+    """Build a snapshot dict matching the schema in docs/slack-triage-view-design.md."""
+    import datetime as _dt
+    if generated_at is None:
+        generated_at = _dt.datetime.now(_dt.timezone.utc).astimezone().isoformat(timespec="seconds")
+    return {
+        "version": version,
+        "generated_at": generated_at,
+        "items": items or [],
+        "noise": noise or {},
+    }
+
+
+def _slack_item(channel_id="C1", message_ts="111.222", tier="reply_needed",
+                sender="Maria", channel_name="hotsauce-squad", is_dm=False,
+                snippet="need your input on the GHE rollout",
+                permalink=None, ts=None, thread_ts=None,
+                action_hint=None, context=None):
+    import datetime as _dt
+    if permalink is None:
+        permalink = (
+            f"https://spotify.slack.com/archives/{channel_id}"
+            f"/p{message_ts.replace('.', '')}"
+        )
+    if ts is None:
+        ts = _dt.datetime.now(_dt.timezone.utc).astimezone().isoformat(timespec="seconds")
+    item = {
+        "channel_id": channel_id, "message_ts": message_ts, "thread_ts": thread_ts,
+        "tier": tier, "is_dm": is_dm, "sender": sender,
+        "channel_name": channel_name, "permalink": permalink,
+        "snippet": snippet, "ts": ts,
+    }
+    if action_hint is not None: item["action_hint"] = action_hint
+    if context is not None:     item["context"] = context
+    return item
+
+
+@pytest.fixture
+def slack_state(tmp_path, monkeypatch):
+    """Point SLACK_*_FILE constants at temp paths. Returns a dict of the
+    three Path objects so tests can write/read directly."""
+    triage = tmp_path / "slack-triage.json"
+    dismissed = tmp_path / "slack-dismissed.json"
+    converted = tmp_path / "slack-converted.json"
+    monkeypatch.setattr(st, "SLACK_SNAPSHOT_FILE", triage)
+    monkeypatch.setattr(st, "SLACK_DISMISSED_FILE", dismissed)
+    monkeypatch.setattr(st, "SLACK_CONVERTED_FILE", converted)
+    return {"triage": triage, "dismissed": dismissed, "converted": converted}
+
+
+def test_slack_view_renders_three_sections(data, slack_state):
+    slack_state["triage"].write_text(json.dumps(_slack_snapshot(items=[
+        _slack_item(channel_id="C1", message_ts="1.1", tier="reply_needed"),
+        _slack_item(channel_id="C2", message_ts="2.2", tier="review",
+                    sender="Lorna", channel_name="github-support"),
+        _slack_item(channel_id="C3", message_ts="3.3", tier="already_handled",
+                    sender="Dennis", channel_name="hotsauce-internal-test-kitchen"),
+    ])))
+    html = st.build_page(data, view="slack")
+    assert "Reply Needed" in html
+    assert "Review" in html
+    assert "Already Handled" in html
+    # Each item rendered with its sender + channel
+    assert "Maria" in html and "#hotsauce-squad" in html
+    assert "Lorna" in html and "#github-support" in html
+    assert "Dennis" in html
+    # Already Handled defaults to collapsed
+    assert "slack-section collapsed" in html
+
+
+def test_slack_view_empty_when_no_snapshot(data, slack_state):
+    """Missing slack-triage.json → friendly placeholder, not 500."""
+    assert not slack_state["triage"].exists()
+    html = st.build_page(data, view="slack")
+    assert "No Slack snapshot yet" in html
+    assert "/slack" in html  # tells the user how to populate
+    assert "<!DOCTYPE html>" in html
+
+
+def test_slack_view_empty_when_snapshot_malformed(data, slack_state):
+    slack_state["triage"].write_text("not valid json {{")
+    html = st.build_page(data, view="slack")
+    assert "unreadable" in html.lower()
+    # Must not 500 — the wrapper page is still emitted
+    assert "<!DOCTYPE html>" in html
+
+
+def test_slack_view_rejects_unknown_version(data, slack_state):
+    snap = _slack_snapshot(items=[], version=99)
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    assert "version not supported" in html.lower()
+    assert "99" in html
+
+
+def test_slack_dismiss_records_id_and_filters_item(data, slack_state):
+    slack_state["triage"].write_text(json.dumps(_slack_snapshot(items=[
+        _slack_item(channel_id="CABC", message_ts="1.111"),
+        _slack_item(channel_id="CDEF", message_ts="2.222", sender="Bob"),
+    ])))
+    item_id = "CABC:1.111"
+    assert st.apply_slack_dismiss(item_id)
+
+    # Dismissed file written with the id
+    saved = json.loads(slack_state["dismissed"].read_text())
+    assert saved == {"version": 1, "ids": [item_id]}
+
+    # Re-render: the dismissed item is filtered out, the other survives
+    html = st.build_page(data, view="slack")
+    assert "Bob" in html
+    # The dismissed item's permalink no longer in the page
+    assert "p1111" not in html
+
+
+def test_slack_dismiss_idempotent(slack_state):
+    """Dismissing the same id twice should leave one entry, not two."""
+    st.apply_slack_dismiss("C1:1.1")
+    st.apply_slack_dismiss("C1:1.1")
+    saved = json.loads(slack_state["dismissed"].read_text())
+    assert saved["ids"] == ["C1:1.1"]
+
+
+def test_slack_dismiss_rejects_bad_input(slack_state):
+    assert not st.apply_slack_dismiss(None)
+    assert not st.apply_slack_dismiss("")
+    assert not st.apply_slack_dismiss(123)
+
+
+def test_slack_convert_creates_task_and_records_id(isolated_state, slack_state):
+    """apply_slack_convert calls apply_add (writing to JSON_FILE / core file)
+    AND appends id to slack-converted.json."""
+    ok = st.apply_slack_convert({
+        "id": "CABC:1.111",
+        "task": "Reply to Maria in #hotsauce-squad",
+        "pri": "P2", "due": "—", "why": "the snippet",
+        "link_label": "Slack",
+        "link_url": "https://spotify.slack.com/archives/CABC/p1111",
+    })
+    assert ok
+    # Task added to JSON_FILE
+    after = json.loads(isolated_state.read_text())
+    names = [t["task"] for s in after["sections"] for t in s["tasks"]]
+    assert "Reply to Maria in #hotsauce-squad" in names
+    # Converted id recorded
+    saved = json.loads(slack_state["converted"].read_text())
+    assert saved == {"version": 1, "ids": ["CABC:1.111"]}
+
+
+def test_slack_convert_failure_does_not_record(isolated_state, slack_state):
+    """If apply_add fails (e.g. empty task name), the converted set must NOT
+    grow — otherwise the item would silently disappear from the view."""
+    ok = st.apply_slack_convert({
+        "id": "CABC:1.111",
+        "task": "",  # empty → apply_add returns False
+    })
+    assert not ok
+    assert not slack_state["converted"].exists()
+
+
+def test_slack_view_filters_by_active_task_permalink(data, slack_state):
+    """If an active task already has the snapshot item's permalink in its
+    links, the slack item is hidden — even without it being in the
+    converted set (legacy / hand-curated case)."""
+    permalink = "https://spotify.slack.com/archives/CXY/pZZZ"
+    snap = _slack_snapshot(items=[
+        _slack_item(channel_id="CXY", message_ts="abc.def", permalink=permalink),
+    ])
+    slack_state["triage"].write_text(json.dumps(snap))
+    # Inject the permalink into an active task's links
+    data["sections"][0]["tasks"][0]["links"] = [{"label": "Slack", "url": permalink}]
+    html = st.build_page(data, view="slack")
+    # No item rendered, so the empty-section text appears
+    assert "Nothing here." in html
+
+
+def test_slack_view_does_not_filter_when_task_is_cancelled(data, slack_state):
+    """A cancelled task with the permalink should NOT hide the item — the
+    user explicitly opted out, so the item is still actionable."""
+    permalink = "https://spotify.slack.com/archives/CXY/pZZZ"
+    snap = _slack_snapshot(items=[
+        _slack_item(channel_id="CXY", message_ts="abc.def", permalink=permalink),
+    ])
+    slack_state["triage"].write_text(json.dumps(snap))
+    target = data["sections"][0]["tasks"][0]
+    target["links"] = [{"label": "Slack", "url": permalink}]
+    target["status"] = "cancelled"
+    html = st.build_page(data, view="slack")
+    # Cancelled doesn't count as "active" so the item is still shown
+    assert permalink in html or "abc.def" in html
+
+
+def test_slack_signature_includes_slack_files(slack_state):
+    """_state_signature must change when any of the three slack files
+    is created or modified — otherwise SSE doesn't fire on /slack writes."""
+    # Need JSON_FILE to be present for _state_signature to return non-None
+    # (the function returns None if the canonical state file is missing).
+    # _safe_mtime returns 0 for missing slack files, which is fine.
+    if not st.JSON_FILE.exists():
+        pytest.skip("real ~/todo/tasks-live.json missing; skipping live signature check")
+    sig_before = st._state_signature()
+    slack_state["triage"].write_text("{}")
+    sig_after = st._state_signature()
+    assert sig_before != sig_after
+
+
+def test_slack_view_escapes_snippet_html(data, slack_state):
+    """Slack messages can contain <, >, &; the rendered .slack-snippet div
+    must escape them. (Raw text in the JSON data block is fine — that script
+    tag is type=application/json and the closing </script> is escaped.)"""
+    snap = _slack_snapshot(items=[
+        _slack_item(snippet="<script>alert(1)</script> & such"),
+    ])
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    # Find the rendered .slack-snippet div and assert no raw HTML survived in it.
+    m = re.search(r'<div class="slack-snippet">(.*?)</div>', html)
+    assert m is not None, "no .slack-snippet div rendered"
+    rendered = m.group(1)
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;" in rendered
+    # And the JSON data block must escape its closing </script> token to
+    # avoid breaking out of the type=application/json tag.
+    assert r'<\/script>' in html or "<\\/script>" in html
+
+
+def test_slack_view_stale_badge_after_24h(data, slack_state):
+    import datetime as _dt
+    old = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=25)).astimezone().isoformat(timespec="seconds")
+    snap = _slack_snapshot(items=[_slack_item()], generated_at=old)
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    assert 'class="slack-stale"' in html
+
+
+def test_slack_view_no_stale_badge_when_fresh(data, slack_state):
+    import datetime as _dt
+    fresh = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=5)).astimezone().isoformat(timespec="seconds")
+    snap = _slack_snapshot(items=[_slack_item()], generated_at=fresh)
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    assert 'class="slack-stale"' not in html
+
+
+def test_slack_view_embeds_items_data_for_modal(data, slack_state):
+    """The convert modal pre-fills from a JSON script tag rather than fetching;
+    the tag must contain the visible items keyed by composite id."""
+    snap = _slack_snapshot(items=[
+        _slack_item(channel_id="CA", message_ts="1.1", sender="Maria"),
+    ])
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    assert 'id="slack-items-data"' in html
+    assert '"CA:1.1"' in html
+    assert '"sender": "Maria"' in html or '"sender":"Maria"' in html
+
+
+def test_slack_view_renders_dm_target_correctly(data, slack_state):
+    snap = _slack_snapshot(items=[
+        _slack_item(is_dm=True, sender="Lorna", channel_name=""),
+    ])
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    assert "@Lorna" in html
+
+
+def test_slack_modal_save_routes_to_convert_endpoint(data):
+    """The modal save handler must route to /slack/convert when in
+    slack-convert mode, NOT /add."""
+    html = st.build_page(data, view="dashboard")
+    assert "mode === 'slack-convert'" in html
+    assert "_post('/slack/convert', payload)" in html
+
+
+def test_slack_view_in_view_switcher(data, slack_state):
+    slack_state["triage"].write_text(json.dumps(_slack_snapshot(items=[])))
+    html = st.build_page(data, view="slack")
+    # View-switcher entry rendered with active class
+    assert '?view=slack' in html
+    assert 'class="vs-btn active"' in html  # current view
+
+
+def test_slack_dismiss_via_post_route(isolated_state, slack_state):
+    """The /slack/dismiss POST route is wired into _ROUTES."""
+    routes = st.Handler._ROUTES
+    assert "/slack/dismiss" in routes
+    assert "/slack/convert" in routes
+    handler = routes["/slack/dismiss"]
+    assert handler({"id": "CXX:9.9"})
+    saved = json.loads(slack_state["dismissed"].read_text())
+    assert "CXX:9.9" in saved["ids"]
+
+
+def test_slack_atomic_write_uses_replace(tmp_path):
+    """_atomic_write_json must write via tempfile + os.replace so partial
+    files are never observed."""
+    target = tmp_path / "out.json"
+    st._atomic_write_json(target, {"version": 1, "ids": ["a", "b"]})
+    assert json.loads(target.read_text()) == {"version": 1, "ids": ["a", "b"]}
+    # No leftover .tmp files
+    leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".")]
+    assert leftovers == []
+
+
+def test_slack_snapshot_required_fields_visible_in_render(data, slack_state):
+    """An item missing a permalink should still render (permalink defaults
+    to # in the link tag) — the dashboard tolerates the optional fields."""
+    snap = _slack_snapshot(items=[{
+        "channel_id": "CA", "message_ts": "1.1", "thread_ts": None,
+        "tier": "reply_needed", "is_dm": False, "sender": "Maria",
+        "channel_name": "x", "permalink": "",
+        "snippet": "hi", "ts": "",
+    }])
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    assert "Maria" in html
+    assert "hi" in html
+
+
+def test_slack_view_noise_summary_renders(data, slack_state):
+    snap = _slack_snapshot(items=[_slack_item()],
+                           noise={"#random": 12, "bot_pings": 8})
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    assert "Noise:" in html
+    assert "12 in #random" in html
+
+
+def test_slack_view_no_noise_line_when_empty(data, slack_state):
+    snap = _slack_snapshot(items=[_slack_item()], noise={})
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    assert "Noise:" not in html
