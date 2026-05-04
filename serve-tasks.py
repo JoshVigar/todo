@@ -1184,7 +1184,11 @@ document.getElementById('sort-btn').addEventListener('click', function() {
 
 // Modal — same DOM serves both Add and Edit. Mode lives on
 // #modal[data-mode]; _editTaskId is non-null only while editing.
+// `_editFetchToken` discards the in-flight /task fetch when the user
+// dismisses the modal or opens a different one before it resolves —
+// without it, a stale .then() would clobber the new state.
 var _editTaskId = null;
+var _editFetchToken = 0;
 function _resetModal() {
   ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){
     var el = document.getElementById(id);
@@ -1194,6 +1198,7 @@ function _resetModal() {
   if (pri) pri.value = 'P2';
 }
 function _openAddModal() {
+  _editFetchToken++;
   _resetModal();
   _editTaskId = null;
   var modal = document.getElementById('modal');
@@ -1204,11 +1209,13 @@ function _openAddModal() {
   setTimeout(function(){ document.getElementById('m-task').focus(); }, 50);
 }
 function _openEditModal(taskId) {
+  var token = ++_editFetchToken;
   fetch('/task?id=' + encodeURIComponent(taskId)).then(function(r) {
+    if (token !== _editFetchToken) return;  // superseded by close/openAdd/openEdit
     if (!r.ok) return;
     return r.json();
   }).then(function(t) {
-    if (!t) return;
+    if (token !== _editFetchToken || !t) return;
     _editTaskId = taskId;
     document.getElementById('m-task').value = t.task || '';
     document.getElementById('m-pri').value = t.pri || 'P2';
@@ -1229,6 +1236,7 @@ function _openEditModal(taskId) {
 }
 document.getElementById('add-btn').addEventListener('click', _openAddModal);
 function closeModal() {
+  _editFetchToken++;  // discard any in-flight /task fetch
   document.getElementById('modal-overlay').classList.remove('open');
   _editTaskId = null;
   var modal = document.getElementById('modal');
@@ -1484,7 +1492,7 @@ function _setHighlight(id) {
 // Skip when clicking a link (link nav takes precedence) or any element
 // inside a modal-style overlay.
 document.addEventListener('click', function(e) {
-  if (e.target.closest('a[href], #modal-overlay, #help-overlay, #ctx-menu')) return;
+  if (e.target.closest('a[href], #modal-overlay, #help-overlay, #ctx-menu, .rename-input')) return;
   var row = e.target.closest(
     'tr[draggable="true"][data-id], .cmp-row[data-id]'
   );
@@ -2953,7 +2961,7 @@ def update_core_file_task(old_name, old_pri, new_name, new_pri,
 
     new_emoji = PRI_EMOJI.get(new_pri, "")
     body = f"{new_emoji} {new_name}" if new_emoji else new_name
-    if new_due and new_due not in ("—", "—"):
+    if new_due and new_due != "—":
         resolved_due = (
             datetime.date.today().isoformat() if new_due == "today" else new_due
         )
@@ -2963,7 +2971,7 @@ def update_core_file_task(old_name, old_pri, new_name, new_pri,
         body += f" ({link_strs})"
     if carried_suffix:
         body += carried_suffix
-    if new_why and new_why not in ("—", "—"):
+    if new_why and new_why != "—":
         body += f" _(why: {new_why})_"
 
     lines[i] = state_prefix + body
@@ -2986,16 +2994,26 @@ def apply_edit(task_id, fields):
     new_name = (fields.get("task") or "").strip()
     if not new_name or _RENAME_FORBIDDEN.search(new_name):
         return False
-    new_pri = fields.get("pri") or task.get("pri") or "P2"
+    # Preserve explicit None ("no priority") — only default when the field
+    # is absent entirely. Empty-string is treated as None.
+    if "pri" in fields:
+        new_pri = fields["pri"] or None
+    else:
+        new_pri = task.get("pri") or "P2"
     new_due = (fields.get("due") or "").strip() or "—"
     new_why = (fields.get("why") or "").strip() or "—"
     if _RENAME_FORBIDDEN.search(new_why):
         return False
     link_label = (fields.get("link_label") or "").strip()
     link_url = (fields.get("link_url") or "").strip()
-    new_links = (
-        [{"label": link_label, "url": link_url}] if link_label and link_url else []
-    )
+    # The modal only edits one link, but the JSON schema allows >1.
+    # Preserve any extras (existing links beyond the first) so a manually
+    # curated multi-link task isn't silently truncated to one.
+    extra_links = (task.get("links") or [])[1:]
+    if link_label and link_url:
+        new_links = [{"label": link_label, "url": link_url}] + extra_links
+    else:
+        new_links = extra_links
 
     old_name = task.get("task", "")
     old_pri = task.get("pri")

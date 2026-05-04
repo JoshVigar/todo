@@ -1275,6 +1275,141 @@ def test_click_to_highlight_listener_present(data):
     assert "_setHighlight(row.dataset.id)" in html
 
 
+def test_apply_edit_preserves_extra_links(isolated_state):
+    """The modal only edits one (label, url), but the JSON schema allows
+    multiple. apply_edit must NOT silently drop links 2+; the modal's
+    single submitted link replaces position 0 and any extras are kept."""
+    # Seed task 120 with two links
+    data = json.loads(isolated_state.read_text())
+    high = next(s for s in data["sections"] if s["title"] == "High Priority")
+    target = high["tasks"][0]
+    target["links"] = [
+        {"label": "first", "url": "https://example.com/1"},
+        {"label": "second", "url": "https://example.com/2"},
+    ]
+    isolated_state.write_text(json.dumps(data, indent=2))
+    # Edit replaces the FIRST link only
+    ok = st.apply_edit(120, {
+        "task": target["task"],
+        "pri": target["pri"],
+        "due": target.get("due", "—"),
+        "why": target.get("why", "—"),
+        "link_label": "replaced",
+        "link_url": "https://example.com/replaced",
+    })
+    assert ok is True
+    new_data = json.loads(isolated_state.read_text())
+    new_task = next(t for s in new_data["sections"] for t in s["tasks"] if t.get("id") == 120)
+    # Position 0 replaced, position 1 preserved
+    assert new_task["links"] == [
+        {"label": "replaced", "url": "https://example.com/replaced"},
+        {"label": "second", "url": "https://example.com/2"},
+    ]
+
+
+def test_apply_edit_clearing_link_keeps_extras(isolated_state):
+    """If the user clears the link fields in the modal, extras still survive
+    — clearing the modal field only drops the first link, not all of them."""
+    data = json.loads(isolated_state.read_text())
+    high = next(s for s in data["sections"] if s["title"] == "High Priority")
+    target = high["tasks"][0]
+    target["links"] = [
+        {"label": "first", "url": "https://example.com/1"},
+        {"label": "kept", "url": "https://example.com/kept"},
+    ]
+    isolated_state.write_text(json.dumps(data, indent=2))
+    ok = st.apply_edit(120, {
+        "task": target["task"], "pri": target["pri"],
+        "due": "—", "why": "—",
+        "link_label": "", "link_url": "",
+    })
+    assert ok is True
+    new_data = json.loads(isolated_state.read_text())
+    new_task = next(t for s in new_data["sections"] for t in s["tasks"] if t.get("id") == 120)
+    assert new_task["links"] == [{"label": "kept", "url": "https://example.com/kept"}]
+
+
+def test_apply_edit_preserves_carried_with_real_why(isolated_state):
+    """Carried + why on the same line: rewrite must keep the carried suffix
+    AND emit the new why suffix in the right order (carried before why,
+    matching the actual convention in journal core files)."""
+    core_path = st.current_core_path("W18")
+    lines = core_path.read_text().split("\n")
+    done_idx = st._done_boundary(lines, len(lines))
+    line = (
+        "- [ ] 🟠 Carried with why — due 14:00 "
+        "_(carried from W17)_ _(why: blocked on review)_"
+    )
+    lines.insert(done_idx, line)
+    core_path.write_text("\n".join(lines))
+
+    data = json.loads(isolated_state.read_text())
+    high = next(s for s in data["sections"] if s["title"] == "High Priority")
+    new_id = st.next_task_id(data)
+    high["tasks"].append({
+        "id": new_id, "num": 99, "pri": "P2",
+        "task": "Carried with why", "due": "14:00", "from": "W17",
+        "links": [], "status": "open", "why": "blocked on review",
+    })
+    isolated_state.write_text(json.dumps(data, indent=2))
+
+    ok = st.apply_edit(new_id, {
+        "task": "Carried with why", "pri": "P2",
+        "due": "15:00", "why": "now waiting on legal",
+        "link_label": "", "link_url": "",
+    })
+    assert ok is True
+    new_text = st.current_core_path("W18").read_text()
+    # New line has both carried and the updated why, in the right order
+    assert (
+        "_(carried from W17)_ _(why: now waiting on legal)_" in new_text
+    ), f"carried+why not in expected order; got:\n{new_text}"
+    # And the old why is gone
+    assert "blocked on review" not in new_text
+
+
+def test_apply_edit_no_priority_emoji(isolated_state):
+    """A task with pri=None should still edit cleanly — no emoji prefix on
+    the rewritten line."""
+    core_path = st.current_core_path("W18")
+    lines = core_path.read_text().split("\n")
+    done_idx = st._done_boundary(lines, len(lines))
+    lines.insert(done_idx, "- [ ] No-emoji task")
+    core_path.write_text("\n".join(lines))
+
+    data = json.loads(isolated_state.read_text())
+    low = next(s for s in data["sections"] if s["title"] == "Lower Priority")
+    new_id = st.next_task_id(data)
+    low["tasks"].append({
+        "id": new_id, "num": 99, "pri": None,
+        "task": "No-emoji task", "due": "—", "from": "W18",
+        "links": [], "status": "open", "why": "—",
+    })
+    isolated_state.write_text(json.dumps(data, indent=2))
+
+    ok = st.apply_edit(new_id, {
+        "task": "No-emoji renamed", "pri": None,
+        "due": "—", "why": "—",
+        "link_label": "", "link_url": "",
+    })
+    assert ok is True
+    new_text = st.current_core_path("W18").read_text()
+    # Line preserved without an emoji prefix
+    assert "- [ ] No-emoji renamed" in new_text
+
+
+def test_modal_fetch_token_guards_against_race(data):
+    """_openEditModal must capture a fetch token at call time and bail in
+    the .then() if it's been superseded by close/openAdd/another openEdit.
+    Without this, a stale fetch resolves and clobbers the new state."""
+    html = st.build_page(data, view="dashboard")
+    assert "var _editFetchToken" in html
+    # Token is captured BEFORE the fetch call
+    assert "var token = ++_editFetchToken;" in html
+    # And checked at both .then steps
+    assert "token !== _editFetchToken" in html
+
+
 def test_help_overlay_is_sectioned(data):
     """The help overlay groups shortcuts into sections — Navigation, Mutate,
     Add & sort, Filter, View & UI."""
