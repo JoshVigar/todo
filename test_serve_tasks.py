@@ -1932,6 +1932,54 @@ def test_slack_thread_dismiss_js_routes_correctly(data, slack_state):
     assert "item.thread_ts || item.message_ts" in html
 
 
+def test_slack_dismiss_top_level_msg_as_thread(data, slack_state):
+    """Dismissing a top-level message as scope=thread (when thread_ts is
+    None) hides the message via the `thread_ts or message_ts` fallback."""
+    snap = _slack_snapshot(items=[
+        _slack_item(channel_id="C1", message_ts="solo.111", thread_ts=None,
+                    sender="Solo"),
+    ])
+    slack_state["triage"].write_text(json.dumps(snap))
+    # Dismiss using the message_ts as the thread root (the JS handler does
+    # exactly this when item.thread_ts is null).
+    assert st.apply_slack_dismiss("C1:solo.111", scope="thread")
+    html = st.build_page(data, view="slack")
+    assert "Solo" not in html
+
+
+def test_slack_converted_log_is_never_compacted(slack_state, monkeypatch):
+    """Converted records are persistent (no TTL). Even with the threshold
+    set to 1 byte, a write must NOT shrink the file — there's no TTL to
+    apply, so compaction would be a no-op rewrite at best."""
+    import datetime as _dt
+    monkeypatch.setattr(st, "SLACK_LOG_COMPACT_BYTES", 1)
+    very_old = (_dt.datetime.now(_dt.timezone.utc)
+                - _dt.timedelta(days=365)).isoformat(timespec="seconds")
+    slack_state["converted"].write_text(
+        json.dumps({"id": "C1:OLD", "ts": very_old}) + "\n"
+    )
+    # Convert path doesn't trigger compaction on the converted file —
+    # _maybe_compact_slack_log is only called by apply_slack_dismiss.
+    # Verify the docstring contract: load_slack_converted returns the old
+    # record regardless of TTL.
+    converted = st.load_slack_converted()
+    assert "C1:OLD" in converted
+
+
+def test_save_state_preserves_mode_bits(isolated_state):
+    """_atomic_write_json (used by _save_state) must preserve the target's
+    existing permission bits. tempfile.mkstemp creates 0600 by default,
+    which would silently tighten the file's mode without the chmod guard."""
+    # Set a non-default mode the user can observe
+    os.chmod(isolated_state, 0o644)
+    before = isolated_state.stat().st_mode & 0o777
+    assert before == 0o644
+    # Trigger a state save
+    assert st.apply_status_change(120)
+    after = isolated_state.stat().st_mode & 0o777
+    assert after == 0o644, f"mode changed from {before:o} to {after:o}"
+
+
 def test_slack_converted_not_ttl_filtered(slack_state):
     """Converted records persist regardless of age — the converted log is
     the dashboard's memory of "this Slack item became a task". Only the

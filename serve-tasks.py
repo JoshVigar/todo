@@ -140,14 +140,24 @@ def _safe_mtime(path):
 
 
 def _atomic_write_json(path, data):
-    """Write JSON via tempfile + os.replace so a partial write is never observed."""
+    """Write JSON via tempfile + os.replace so a partial write is never observed.
+    Preserves the target's existing mode bits across the replace — `mkstemp`
+    creates 0600 by default, which would silently tighten permissions on a
+    pre-existing file (e.g. tasks-live.json) without this guard."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing_mode = None
+    try:
+        existing_mode = path.stat().st_mode & 0o777
+    except OSError:
+        pass
     fd, tmp = tempfile.mkstemp(
         prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent)
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        if existing_mode is not None:
+            os.chmod(tmp, existing_mode)
         os.replace(tmp, path)
     except Exception:
         try:
@@ -3791,9 +3801,12 @@ def load_slack_log(path, ttl_days=None):
 
 
 def _append_slack_log(path, record):
-    """Append one JSON record + newline. POSIX guarantees writes < PIPE_BUF
-    (4096) are atomic on regular files when O_APPEND is in effect, which
-    `mode='a'` provides. Our records are ~150 bytes — well under the limit."""
+    """Append one JSON record + newline. Caller MUST hold `_slack_lock` —
+    not because the append itself isn't atomic on POSIX (it is, for our
+    sub-PIPE_BUF lines), but because compaction races with concurrent
+    appends: `_maybe_compact_slack_log` reads the file, then atomically
+    rewrites it via `os.replace`, which would silently drop any append
+    that landed on the now-orphaned inode."""
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, ensure_ascii=False) + "\n"
     with open(path, "a", encoding="utf-8") as f:
@@ -3877,7 +3890,13 @@ def apply_slack_dismiss(item_id, scope="message"):
 
 def apply_slack_convert(body):
     """Add a task via apply_add, then append a converted record. On
-    apply_add failure, do NOT append (item stays in the view)."""
+    apply_add failure, do NOT append (item stays in the view).
+
+    PRECONDITION: `_state_lock` must be held externally — apply_add
+    mutates tasks-live.json and follows the dashboard's convention that
+    do_POST takes `_state_lock` for the entire handler call. Calling
+    this function outside the request path (e.g. from a script) without
+    that lock will race against concurrent task mutations."""
     item_id = body.get("id")
     if not isinstance(item_id, str) or not item_id:
         return False
