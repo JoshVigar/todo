@@ -1873,6 +1873,48 @@ def test_slack_log_compaction_drops_expired(slack_state, monkeypatch):
     assert all(not k.startswith("C1:OLD") for k in ids)
 
 
+def test_slack_dismiss_route_passes_scope(isolated_state, slack_state):
+    """The /slack/dismiss route must forward scope=thread to apply_slack_dismiss
+    so the JSONL line carries kind=thread."""
+    handler = st.Handler._ROUTES["/slack/dismiss"]
+    assert handler({"id": "C1:1.111", "scope": "thread"})
+    records = _read_jsonl(slack_state["dismissed"])
+    assert any(r.get("kind") == "thread" for r in records)
+
+
+def test_slack_dismiss_route_defaults_to_message_scope(isolated_state, slack_state):
+    """A POST without `scope` defaults to message-level dismissal."""
+    handler = st.Handler._ROUTES["/slack/dismiss"]
+    assert handler({"id": "C1:1.111"})
+    records = _read_jsonl(slack_state["dismissed"])
+    assert all(r.get("kind") == "message" for r in records)
+
+
+def test_slack_view_renders_thread_dismiss_button(data, slack_state):
+    """Each row must offer the thread-dismiss button alongside the per-
+    message Dismiss and Convert."""
+    snap = _slack_snapshot(items=[_slack_item()])
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    assert 'class="slack-dismiss-thread"' in html
+    assert 'class="slack-dismiss"' in html
+    assert 'class="slack-convert"' in html
+
+
+def test_slack_thread_dismiss_js_routes_correctly(data, slack_state):
+    """JS must POST scope:'thread' for the thread-dismiss button and
+    construct the thread root id from item.thread_ts or message_ts."""
+    snap = _slack_snapshot(items=[_slack_item()])
+    slack_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="slack")
+    # JS branch checks for the .slack-dismiss-thread selector
+    assert ".slack-dismiss-thread" in html
+    # And POSTs with scope:'thread'
+    assert "scope: 'thread'" in html
+    # Falls back to message_ts when thread_ts is missing
+    assert "item.thread_ts || item.message_ts" in html
+
+
 def test_slack_converted_not_ttl_filtered(slack_state):
     """Converted records persist regardless of age — the converted log is
     the dashboard's memory of "this Slack item became a task". Only the

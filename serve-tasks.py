@@ -879,6 +879,10 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 }
 .slack-actions button:hover { background: #30363d; color: #e6edf3; }
 .slack-actions .slack-dismiss:hover { color: #f85149; border-color: #f85149; }
+.slack-actions .slack-dismiss-thread:hover {
+  color: #ffa198; border-color: #f85149;
+  background: rgba(248, 81, 73, 0.08);
+}
 .slack-actions .btn-icon { font-weight: 700; margin-right: 2px; }
 .slack-empty { padding: 16px 12px; color: #6e7681; font-style: italic; }
 .slack-noise {
@@ -1794,7 +1798,28 @@ document.addEventListener('click', function(e) {
     _openSlackConvertModal(item);
     return;
   }
-  // Dismiss button → POST /slack/dismiss
+  // Thread-dismiss button → POST /slack/dismiss with scope=thread.
+  // Must be checked BEFORE the per-message dismiss handler — the
+  // .slack-dismiss-thread class doesn't include .slack-dismiss, but
+  // ordering keeps the precedence intent obvious.
+  var threadBtn = e.target.closest('.slack-dismiss-thread');
+  if (threadBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    var trow = threadBtn.closest('.slack-row');
+    if (!trow) return;
+    var item = _slackItems()[trow.dataset.id];
+    if (!item) return;
+    // Build the thread root id: thread_ts if this is a reply, else
+    // the item's own message_ts (top-level msg = its own thread root).
+    var threadRoot = item.thread_ts || item.message_ts || '';
+    var threadId = (item.channel_id || '') + ':' + threadRoot;
+    _post('/slack/dismiss', {id: threadId, scope: 'thread'}).then(function(r) {
+      if (r.ok) trow.remove();
+    });
+    return;
+  }
+  // Per-message dismiss button → POST /slack/dismiss
   var dismissBtn = e.target.closest('.slack-dismiss');
   if (dismissBtn) {
     e.preventDefault();
@@ -2560,10 +2585,16 @@ def _render_slack_section(label, items, *, color, collapsed=False):
             f'</div>'
             f'<div class="slack-snippet">{h(snippet)}</div>'
             f'<div class="slack-actions">'
-            f'<button class="slack-convert" type="button">'
+            f'<button class="slack-convert" type="button" '
+            f'title="Convert to task (⌘+click for quick-add, no modal)">'
             f'<span class="btn-icon">+</span> Convert to task</button>'
-            f'<button class="slack-dismiss" type="button">'
+            f'<button class="slack-dismiss" type="button" '
+            f'title="Dismiss this message (re-surfaces if a new reply lands)">'
             f'<span class="btn-icon">×</span> Dismiss</button>'
+            f'<button class="slack-dismiss-thread" type="button" '
+            f'title="Dismiss the whole thread (TTL: '
+            f'{SLACK_DISMISS_TTL_DAYS} days, then re-surfaces if still active)">'
+            f'<span class="btn-icon">⊘</span> Thread</button>'
             f'</div>'
             f'</div>'
         )
@@ -3992,7 +4023,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         "/rename":       lambda b: apply_rename(b.get("id"), b.get("name", "")),
         "/add":          lambda b: apply_add(b),
         "/edit":         lambda b: apply_edit(b.get("id"), b),
-        "/slack/dismiss": lambda b: apply_slack_dismiss(b.get("id")),
+        "/slack/dismiss": lambda b: apply_slack_dismiss(
+            b.get("id"), scope=(b.get("scope") or "message")),
         "/slack/convert": lambda b: apply_slack_convert(b),
     }
 
