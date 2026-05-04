@@ -478,6 +478,13 @@ tr.row-highlight > td { background: rgba(56, 139, 253, 0.08) !important; }
   font-size: 12px; line-height: 1;
   display: inline-block;
 }
+#help tr.help-section th {
+  text-align: left; padding: 12px 0 4px;
+  color: #8b949e; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  border-bottom: 1px solid #30363d;
+}
+#help tr.help-section:first-child th { padding-top: 0; }
 #help-close {
   margin-top: 14px; background: #238636; border: 0; color: #fff;
   padding: 5px 14px; border-radius: 4px; cursor: pointer; font-size: 12px;
@@ -1175,13 +1182,57 @@ document.getElementById('sort-btn').addEventListener('click', function() {
   _post('/sort', {});
 });
 
-// Add button + modal
-document.getElementById('add-btn').addEventListener('click', function() {
+// Modal — same DOM serves both Add and Edit. Mode lives on
+// #modal[data-mode]; _editTaskId is non-null only while editing.
+var _editTaskId = null;
+function _resetModal() {
+  ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  var pri = document.getElementById('m-pri');
+  if (pri) pri.value = 'P2';
+}
+function _openAddModal() {
+  _resetModal();
+  _editTaskId = null;
+  var modal = document.getElementById('modal');
+  modal.dataset.mode = 'add';
+  document.getElementById('modal-title').textContent = 'Add Task';
+  document.getElementById('modal-save').textContent = 'Add task';
   document.getElementById('modal-overlay').classList.add('open');
   setTimeout(function(){ document.getElementById('m-task').focus(); }, 50);
-});
+}
+function _openEditModal(taskId) {
+  fetch('/task?id=' + encodeURIComponent(taskId)).then(function(r) {
+    if (!r.ok) return;
+    return r.json();
+  }).then(function(t) {
+    if (!t) return;
+    _editTaskId = taskId;
+    document.getElementById('m-task').value = t.task || '';
+    document.getElementById('m-pri').value = t.pri || 'P2';
+    var due = t.due || '';
+    document.getElementById('m-due').value = (due === '—' ? '' : due);
+    var why = t.why || '';
+    document.getElementById('m-why').value = (why === '—' ? '' : why);
+    var link = (t.links && t.links[0]) || {};
+    document.getElementById('m-link-label').value = link.label || '';
+    document.getElementById('m-link-url').value = link.url || '';
+    var modal = document.getElementById('modal');
+    modal.dataset.mode = 'edit';
+    document.getElementById('modal-title').textContent = 'Edit Task';
+    document.getElementById('modal-save').textContent = 'Save changes';
+    document.getElementById('modal-overlay').classList.add('open');
+    setTimeout(function(){ document.getElementById('m-task').focus(); }, 50);
+  });
+}
+document.getElementById('add-btn').addEventListener('click', _openAddModal);
 function closeModal() {
   document.getElementById('modal-overlay').classList.remove('open');
+  _editTaskId = null;
+  var modal = document.getElementById('modal');
+  if (modal) modal.dataset.mode = 'add';
 }
 document.getElementById('modal-cancel').addEventListener('click', closeModal);
 // Cmd+Enter (or Ctrl+Enter) inside the Add modal triggers Save —
@@ -1209,16 +1260,18 @@ document.getElementById('modal-save').addEventListener('click', function() {
     link_label: document.getElementById('m-link-label').value.trim(),
     link_url: document.getElementById('m-link-url').value.trim()
   };
-  _post('/add', payload).then(function(r) {
+  var mode = document.getElementById('modal').dataset.mode || 'add';
+  function _onSaved(r) {
     if (!r.ok) return;
     closeModal();
-    ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){
-      var el = document.getElementById(id);
-      if (el) el.value = '';
-    });
-    var pri = document.getElementById('m-pri');
-    if (pri) pri.value = 'P2';
-  });
+    _resetModal();
+  }
+  if (mode === 'edit') {
+    payload.id = _editTaskId;
+    _post('/edit', payload).then(_onSaved);
+  } else {
+    _post('/add', payload).then(_onSaved);
+  }
 });
 
 // Drag-and-drop reordering — works on both full table rows and compact rows
@@ -1386,6 +1439,8 @@ document.addEventListener('click', function(e) {
       _showToast('Task cancelled', function() { _post('/uncancel', {id: taskId}); });
     } else if (item.dataset.action === 'complete') {
       _post('/complete', {id: taskId});
+    } else if (item.dataset.action === 'edit') {
+      _openEditModal(taskId);
     } else {
       _post('/move-section', {id: taskId, section: item.dataset.section});
     }
@@ -1423,6 +1478,19 @@ function _setHighlight(id) {
     }
   }
 }
+// Click-to-highlight: any click within a row sets it as the keyboard-nav
+// target so subsequent hotkeys (e/s/p/Enter) act on the row the user just
+// clicked. Layered on top of existing click handlers — they all still fire.
+// Skip when clicking a link (link nav takes precedence) or any element
+// inside a modal-style overlay.
+document.addEventListener('click', function(e) {
+  if (e.target.closest('a[href], #modal-overlay, #help-overlay, #ctx-menu')) return;
+  var row = e.target.closest(
+    'tr[draggable="true"][data-id], .cmp-row[data-id]'
+  );
+  if (row && row.dataset.id) _setHighlight(row.dataset.id);
+});
+
 function _moveHighlight(dir) {
   var rows = _highlightableRows();
   if (!rows.length) return;
@@ -1532,11 +1600,9 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'x') { e.preventDefault(); _toggleExpandAll(); return; }
   if (e.key === 'r') { e.preventDefault(); _refreshTasks(true); return; }
   if (e.key === 's') { e.preventDefault(); _post('/sort', {}); return; }
-  if (e.key === 'a') {
-    e.preventDefault();
-    document.getElementById('modal-overlay').classList.add('open');
-    setTimeout(function(){ document.getElementById('m-task').focus(); }, 50);
-    return;
+  if (e.key === 'a') { e.preventDefault(); _openAddModal(); return; }
+  if (e.key === 'e' && _hilitId != null) {
+    e.preventDefault(); _openEditModal(_hilitId); return;
   }
   if (e.key === 'c') {
     e.preventDefault();
@@ -2278,8 +2344,8 @@ def build_page(data, view="dashboard"):
         f'<meta name="tasks-view" content="{view}">'
         f'<title>Tasks</title><style>{CSS}</style>'
         f'</head><body>{switcher}<div id="tasks-content">{body}</div>'
-        f'<div id="modal-overlay"><div id="modal">'
-        f'<h3>Add Task</h3>'
+        f'<div id="modal-overlay"><div id="modal" data-mode="add">'
+        f'<h3 id="modal-title">Add Task</h3>'
         f'<label>Task name</label>'
         f'<input id="m-task" type="text" placeholder="Task description">'
         f'<div class="modal-row">'
@@ -2309,21 +2375,28 @@ def build_page(data, view="dashboard"):
         f'<div id="help-overlay"><div id="help">'
         f'<h3>Keyboard shortcuts</h3>'
         f'<table>'
-        f'<tr><td>Expand / collapse all detail panels</td><td><kbd>x</kbd></td></tr>'
-        f'<tr><td>Refresh the view</td><td><kbd>r</kbd></td></tr>'
-        f'<tr><td>Sort tasks by priority</td><td><kbd>s</kbd></td></tr>'
-        f'<tr><td>Open Add task modal</td><td><kbd>a</kbd></td></tr>'
-        f'<tr><td>Submit Add modal</td><td><kbd>⌘</kbd>+<kbd>Enter</kbd></td></tr>'
-        f'<tr><td>Toggle dashboard / classic view</td><td><kbd>c</kbd></td></tr>'
-        f'<tr><td>Open filter popup</td><td><kbd>/</kbd></td></tr>'
-        f'<tr><td>Click topbar pill to filter (multi-select)</td><td>—</td></tr>'
+        f'<tr class="help-section"><th colspan="2">Navigation</th></tr>'
         f'<tr><td>Highlight next row</td><td><kbd>j</kbd> <kbd>↓</kbd></td></tr>'
         f'<tr><td>Highlight previous row</td><td><kbd>k</kbd> <kbd>↑</kbd></td></tr>'
+        f'<tr><td>Click a row to highlight it</td><td>—</td></tr>'
         f'<tr><td>Expand / collapse highlighted row</td><td><kbd>Enter</kbd></td></tr>'
-        f'<tr><td>Cycle status of highlighted row</td><td><kbd>Shift</kbd>+<kbd>S</kbd></td></tr>'
-        f'<tr><td>Cycle priority of highlighted row</td><td><kbd>Shift</kbd>+<kbd>P</kbd></td></tr>'
         f'<tr><td>Jump to Focus / High / Lower</td>'
         f'<td><kbd>Shift</kbd>+<kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd></td></tr>'
+        f'<tr class="help-section"><th colspan="2">Mutate highlighted row</th></tr>'
+        f'<tr><td>Edit task (modal)</td><td><kbd>e</kbd></td></tr>'
+        f'<tr><td>Cycle status</td><td><kbd>Shift</kbd>+<kbd>S</kbd></td></tr>'
+        f'<tr><td>Cycle priority</td><td><kbd>Shift</kbd>+<kbd>P</kbd></td></tr>'
+        f'<tr class="help-section"><th colspan="2">Add &amp; sort</th></tr>'
+        f'<tr><td>Open Add task modal</td><td><kbd>a</kbd></td></tr>'
+        f'<tr><td>Submit modal (Add or Edit)</td><td><kbd>⌘</kbd>+<kbd>Enter</kbd></td></tr>'
+        f'<tr><td>Sort tasks by priority</td><td><kbd>s</kbd></td></tr>'
+        f'<tr class="help-section"><th colspan="2">Filter</th></tr>'
+        f'<tr><td>Open filter popup</td><td><kbd>/</kbd></td></tr>'
+        f'<tr><td>Click topbar pill to filter (multi-select)</td><td>—</td></tr>'
+        f'<tr class="help-section"><th colspan="2">View &amp; UI</th></tr>'
+        f'<tr><td>Expand / collapse all detail panels</td><td><kbd>x</kbd></td></tr>'
+        f'<tr><td>Refresh the view</td><td><kbd>r</kbd></td></tr>'
+        f'<tr><td>Toggle dashboard / classic view</td><td><kbd>c</kbd></td></tr>'
         f'<tr><td>Close modal · collapse all · clear menu</td><td><kbd>Esc</kbd></td></tr>'
         f'<tr><td>Show this help</td><td><kbd>?</kbd></td></tr>'
         f'</table>'
@@ -2342,6 +2415,7 @@ def build_page(data, view="dashboard"):
         f'<div class="ctx-item" data-section="{SEC_HIGH}">{SEC_HIGH}</div>'
         f'<div class="ctx-item" data-section="{SEC_LOW}">{SEC_LOW}</div>'
         f'<div class="ctx-divider"></div>'
+        f'<div class="ctx-item" data-action="edit">✏️ Edit task</div>'
         f'<div class="ctx-item" data-action="complete">✅ Mark as done</div>'
         f'<div class="ctx-item danger" data-action="cancel">Cancel task</div>'
         f'</div>'
@@ -2833,6 +2907,116 @@ def update_core_file_name(old_name, new_name, week=None, pri=None):
 _RENAME_FORBIDDEN = re.compile(r"[\x00-\x1f\x7f]")
 
 
+_CARRIED_RE = re.compile(r"\s*_\(carried from [^)]+\)_")
+
+
+def update_core_file_task(old_name, old_pri, new_name, new_pri,
+                          new_due, new_why, new_links, week=None):
+    """Rewrite the WHOLE task line in the core file: name, priority emoji,
+    due, links, why. Preserves the state marker and any `_(carried from
+    Wxx)_` metadata. Used by `apply_edit` — broader than `update_core_file_name`
+    (name only) or `update_core_file_priority` (emoji only)."""
+    core_path = current_core_path(week)
+    try:
+        lines = core_path.read_text().split("\n")
+    except FileNotFoundError:
+        return
+    done_section = _done_boundary(lines, len(lines))
+    expected_emoji = PRI_EMOJI.get(old_pri) if old_pri else None
+
+    # Prefer name+emoji match (disambiguates duplicate names across priorities).
+    target_idx = None
+    fallback_idx = None
+    for i, line in enumerate(lines[:done_section]):
+        if not line.strip().startswith("- ["):
+            continue
+        if _extract_task_name(line) != old_name:
+            continue
+        if expected_emoji and expected_emoji in line:
+            target_idx = i
+            break
+        if fallback_idx is None:
+            fallback_idx = i
+    i = target_idx if target_idx is not None else fallback_idx
+    if i is None:
+        return
+
+    line = lines[i]
+    m = re.match(r"(\s*- \[.\]\s+)", line)
+    if not m:
+        return
+    state_prefix = m.group(1)
+
+    # Preserve `_(carried from W..)_` if the task was carried over.
+    carried_match = _CARRIED_RE.search(line)
+    carried_suffix = carried_match.group(0) if carried_match else ""
+
+    new_emoji = PRI_EMOJI.get(new_pri, "")
+    body = f"{new_emoji} {new_name}" if new_emoji else new_name
+    if new_due and new_due not in ("—", "—"):
+        resolved_due = (
+            datetime.date.today().isoformat() if new_due == "today" else new_due
+        )
+        body += f" — due {resolved_due}"
+    if new_links:
+        link_strs = " · ".join(f"[{l['label']}]({l['url']})" for l in new_links)
+        body += f" ({link_strs})"
+    if carried_suffix:
+        body += carried_suffix
+    if new_why and new_why not in ("—", "—"):
+        body += f" _(why: {new_why})_"
+
+    lines[i] = state_prefix + body
+    core_path.write_text("\n".join(lines))
+
+
+def apply_edit(task_id, fields):
+    """Edit a task — updates name, pri, due, why, links in JSON + core file.
+    Preserves state marker and `_(carried from)_` metadata. Returns False if
+    the new name is empty or contains control chars (would corrupt markdown).
+    Section is NOT auto-moved on priority change — matches `apply_priority_update`
+    behaviour; the user can drag if they want a different section."""
+    data = _load_state()
+    if data is None:
+        return False
+    task, source = find_task_by_id(data, task_id)
+    if task is None:
+        return False
+
+    new_name = (fields.get("task") or "").strip()
+    if not new_name or _RENAME_FORBIDDEN.search(new_name):
+        return False
+    new_pri = fields.get("pri") or task.get("pri") or "P2"
+    new_due = (fields.get("due") or "").strip() or "—"
+    new_why = (fields.get("why") or "").strip() or "—"
+    if _RENAME_FORBIDDEN.search(new_why):
+        return False
+    link_label = (fields.get("link_label") or "").strip()
+    link_url = (fields.get("link_url") or "").strip()
+    new_links = (
+        [{"label": link_label, "url": link_url}] if link_label and link_url else []
+    )
+
+    old_name = task.get("task", "")
+    old_pri = task.get("pri")
+
+    task["task"] = new_name
+    task["pri"] = new_pri
+    task["due"] = new_due
+    task["why"] = new_why
+    task["links"] = new_links
+
+    _save_state(data)
+    update_core_file_task(
+        old_name, old_pri, new_name, new_pri, new_due, new_why, new_links,
+        week=data.get("week"),
+    )
+    # Re-snapshot Today's Focus if this task is in it (focus list keys by name).
+    if source is not None:
+        _snapshot_focus_if_touched(data, source.get("title", ""))
+    return True
+
+
 def apply_rename(task_id, new_name):
     """Rename a task's display name. Updates JSON `task` field and the
     matching markdown line's name slot. Rejects names with control chars
@@ -3120,6 +3304,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
+        if self.path.startswith("/task"):
+            # Returns the JSON record for one task. Used by the Edit modal
+            # to pre-fill its fields without rendering the full task data
+            # into every row's HTML.
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                task_id = int(params.get("id", ["0"])[0])
+            except ValueError:
+                task_id = 0
+            data = _load_state() if task_id else None
+            task = find_task_by_id(data, task_id)[0] if data else None
+            if not task:
+                self.send_response(404); self.end_headers(); return
+            payload = json.dumps(task).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
 
         # Parse ?view=… so different layouts can be requested
         params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -3193,6 +3398,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         "/uncancel":     lambda b: apply_uncancel(b.get("id")),
         "/rename":       lambda b: apply_rename(b.get("id"), b.get("name", "")),
         "/add":          lambda b: apply_add(b),
+        "/edit":         lambda b: apply_edit(b.get("id"), b),
     }
 
     def do_POST(self):

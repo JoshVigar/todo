@@ -215,7 +215,7 @@ def test_ctx_menu_has_mark_as_done(data):
 # (`_refreshTasks(true)`) so the dashboard never lies.
 MUTATING_ROUTES = [
     "/update", "/complete", "/update-pri", "/uncomplete",
-    "/sort", "/reorder", "/move-section", "/cancel", "/add",
+    "/sort", "/reorder", "/move-section", "/cancel", "/add", "/edit",
 ]
 
 
@@ -1152,3 +1152,137 @@ def test_target_section_for_pri():
     assert st.target_section_for_pri("P2") == st.SEC_HIGH
     assert st.target_section_for_pri("P3") == st.SEC_LOW
     assert st.target_section_for_pri(None) == st.SEC_LOW
+
+
+def test_edit_modal_dual_mode_wired(data):
+    """The Add modal's DOM is reused for editing. Mode lives on
+    #modal[data-mode]; title and save-button labels swap based on mode;
+    save POSTs to /add or /edit depending."""
+    html = st.build_page(data, view="dashboard")
+    # Modal carries the mode attribute
+    assert 'id="modal" data-mode="add"' in html
+    # Title and save are id-tagged so JS can swap their text
+    assert 'id="modal-title"' in html
+    assert 'id="modal-save"' in html
+    # Open helpers and reset helper exist
+    assert "function _openAddModal()" in html
+    assert "function _openEditModal(taskId)" in html
+    assert "function _resetModal()" in html
+    # Save handler branches on mode and posts to the right route
+    assert "_post('/edit'," in html
+    assert "_post('/add'," in html
+
+
+def test_edit_modal_prefills_via_task_endpoint(data):
+    """_openEditModal fetches GET /task?id=N and pre-fills modal fields."""
+    html = st.build_page(data, view="dashboard")
+    assert "fetch('/task?id=' + encodeURIComponent(taskId))" in html
+
+
+def test_ctx_menu_has_edit(data):
+    """The right-click context menu carries an Edit item that triggers
+    the edit modal."""
+    html = st.build_page(data, view="dashboard")
+    assert 'data-action="edit"' in html
+    # Click handler routes the action to _openEditModal
+    assert "_openEditModal(taskId)" in html
+
+
+def test_e_hotkey_opens_edit_for_highlighted(data):
+    """`e` on a highlighted row opens the edit modal."""
+    html = st.build_page(data, view="dashboard")
+    assert "e.key === 'e' && _hilitId != null" in html
+    assert "_openEditModal(_hilitId)" in html
+
+
+def test_apply_edit_updates_json_and_core(isolated_state):
+    """apply_edit rewrites JSON entry's pri/due/why/links/name and the core
+    file's matching task line."""
+    # Task id 120 is High prio task (P2, due 17:00) in the fixture
+    ok = st.apply_edit(120, {
+        "task": "Renamed via apply_edit",
+        "pri": "P1",
+        "due": "17:30",
+        "why": "ship before friday",
+        "link_label": "HOTS-9999",
+        "link_url": "https://example.com/9999",
+    })
+    assert ok is True
+    new_data = json.loads(isolated_state.read_text())
+    new_task = next(t for s in new_data["sections"] for t in s["tasks"] if t.get("id") == 120)
+    assert new_task["task"] == "Renamed via apply_edit"
+    assert new_task["pri"] == "P1"
+    assert new_task["due"] == "17:30"
+    assert new_task["why"] == "ship before friday"
+    assert new_task["links"] == [{"label": "HOTS-9999", "url": "https://example.com/9999"}]
+    core_text = st.current_core_path("W18").read_text()
+    assert "Renamed via apply_edit" in core_text
+    # New line carries the new emoji and due
+    assert "🔴 Renamed via apply_edit" in core_text
+    assert "due 17:30" in core_text
+    # And the why suffix
+    assert "_(why: ship before friday)_" in core_text
+    # Old name is gone (no other task shares it)
+    assert "High prio task" not in core_text
+
+
+def test_apply_edit_rejects_control_chars(isolated_state):
+    """apply_edit must reject names/whys with newlines or other control chars
+    that would corrupt the markdown structure."""
+    assert st.apply_edit(120, {"task": "with\nnewline"}) is False
+    assert st.apply_edit(120, {"task": "ok name", "why": "evil\twhy"}) is False
+
+
+def test_apply_edit_preserves_carried_metadata(isolated_state):
+    """When a task line carries `_(carried from Wxx)_`, apply_edit must
+    preserve that suffix when rewriting the rest of the line."""
+    core_path = st.current_core_path("W18")
+    lines = core_path.read_text().split("\n")
+    done_idx = st._done_boundary(lines, len(lines))
+    carried_line = "- [ ] 🟠 Carried task name — due 14:00 _(carried from W17)_"
+    lines.insert(done_idx, carried_line)
+    core_path.write_text("\n".join(lines))
+
+    data = json.loads(isolated_state.read_text())
+    high = next(s for s in data["sections"] if s["title"] == "High Priority")
+    new_id = st.next_task_id(data)
+    high["tasks"].append({
+        "id": new_id, "num": 99, "pri": "P2",
+        "task": "Carried task name", "due": "14:00", "from": "W17",
+        "links": [], "status": "open", "why": "—",
+    })
+    isolated_state.write_text(json.dumps(data, indent=2))
+
+    ok = st.apply_edit(new_id, {
+        "task": "Carried task RENAMED",
+        "pri": "P1", "due": "15:00", "why": "—",
+        "link_label": "", "link_url": "",
+    })
+    assert ok is True
+    new_text = st.current_core_path("W18").read_text()
+    assert "_(carried from W17)_" in new_text
+    assert "Carried task RENAMED" in new_text
+
+
+def test_click_to_highlight_listener_present(data):
+    """A document-level click listener sets the highlight when a row is
+    clicked, so subsequent hotkeys (e/Shift+S/Shift+P/Enter) target the
+    just-clicked row."""
+    html = st.build_page(data, view="dashboard")
+    # The listener selector must match both row types
+    assert 'tr[draggable="true"][data-id], .cmp-row[data-id]' in html
+    # And it must call _setHighlight on a row click
+    assert "_setHighlight(row.dataset.id)" in html
+
+
+def test_help_overlay_is_sectioned(data):
+    """The help overlay groups shortcuts into sections — Navigation, Mutate,
+    Add & sort, Filter, View & UI."""
+    html = st.build_page(data, view="dashboard")
+    for label in ("Navigation", "Mutate highlighted row",
+                  "Add &amp; sort", "Filter", "View &amp; UI"):
+        assert f'<th colspan="2">{label}</th>' in html, (
+            f"missing help section header: {label}"
+        )
+    # Edit hotkey is documented in the new Mutate section
+    assert "Edit task (modal)" in html and "<kbd>e</kbd>" in html
