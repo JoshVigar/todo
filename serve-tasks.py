@@ -935,7 +935,37 @@ function _post(url, payload) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload || {})
-  }).then(function(r) { _refreshTasks(true); return r; });
+  }).then(function(r) {
+    _refreshTasks(true);
+    if (!r.ok) {
+      // Surface server-side rejection — without this the user sees nothing
+      // when /edit, /add, etc. return 400 from validation.
+      console.warn('POST', url, 'returned', r.status);
+      _showErrorToast(url + ' failed (' + r.status + ') — see ' +
+                      '~/todo/serve-tasks-requests.log');
+    }
+    return r;
+  });
+}
+
+function _showErrorToast(message) {
+  var toast = document.getElementById('toast');
+  if (!toast) return;
+  toast.querySelector('.toast-msg').textContent = message;
+  var progress = toast.querySelector('.toast-progress');
+  progress.classList.remove('run');
+  // Hide the Undo button — there's nothing to undo on failure
+  var undo = toast.querySelector('.toast-undo');
+  if (undo) undo.style.display = 'none';
+  toast.classList.add('open');
+  requestAnimationFrame(function() {
+    requestAnimationFrame(function() { progress.classList.add('run'); });
+  });
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(function() {
+    toast.classList.remove('open');
+    if (undo) undo.style.display = '';
+  }, 5000);
 }
 
 // Toast for undo-able actions. Shows for 5s; click Undo to fire `onUndo`.
@@ -3456,7 +3486,15 @@ def apply_edit(task_id, fields):
         return False
 
     new_name = (fields.get("task") or "").strip()
-    if not new_name or _RENAME_FORBIDDEN.search(new_name):
+    if not new_name:
+        _log_request(f"WARN apply_edit({task_id}) rejected: empty task name")
+        return False
+    if _RENAME_FORBIDDEN.search(new_name):
+        bad = _RENAME_FORBIDDEN.search(new_name).group(0)
+        _log_request(
+            f"WARN apply_edit({task_id}) rejected: control char "
+            f"U+{ord(bad):04X} in task name {new_name!r}"
+        )
         return False
     # Preserve explicit None ("no priority") — only default when the field
     # is absent entirely. Empty-string is treated as None.
@@ -3467,6 +3505,11 @@ def apply_edit(task_id, fields):
     new_due = (fields.get("due") or "").strip() or "—"
     new_why = (fields.get("why") or "").strip() or "—"
     if _RENAME_FORBIDDEN.search(new_why):
+        bad = _RENAME_FORBIDDEN.search(new_why).group(0)
+        _log_request(
+            f"WARN apply_edit({task_id}) rejected: control char "
+            f"U+{ord(bad):04X} in why {new_why!r}"
+        )
         return False
     link_label = (fields.get("link_label") or "").strip()
     link_url = (fields.get("link_url") or "").strip()
