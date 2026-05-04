@@ -982,6 +982,10 @@ function _showToast(message, onUndo) {
     requestAnimationFrame(function() { progress.classList.add('run'); });
   });
   var undoBtn = toast.querySelector('.toast-undo');
+  // Always make Undo visible for success toasts — clears any inline
+  // `display: none` left over from a preceding error toast (cloneNode
+  // would otherwise preserve it).
+  undoBtn.style.display = '';
   // Replace the button to remove any old listener
   var fresh = undoBtn.cloneNode(true);
   undoBtn.parentNode.replaceChild(fresh, undoBtn);
@@ -3097,7 +3101,16 @@ def next_task_id(data):
     return max(ids, default=0) + 1
 
 def find_task_by_id(data, task_id):
-    """Return (task, section) for the given stable id, or (None, None)."""
+    """Return (task, section) for the given stable id, or (None, None).
+    Coerces `task_id` to int — JS callers may pass `row.dataset.id`
+    which is always a string. Without this, every match would fail
+    silently on `34 != "34"`. Centralising here means every caller
+    (apply_edit, apply_status_change, apply_cancel, etc.) is
+    protected without each having to remember the cast."""
+    try:
+        task_id = int(task_id)
+    except (TypeError, ValueError):
+        return None, None
     for section in data.get("sections", []):
         for task in section.get("tasks", []):
             if task.get("id") == task_id:
@@ -3482,21 +3495,15 @@ def apply_edit(task_id, fields):
     Preserves state marker and `_(carried from)_` metadata. Returns False if
     the new name is empty or contains control chars (would corrupt markdown).
     Section is NOT auto-moved on priority change — matches `apply_priority_update`
-    behaviour; the user can drag if they want a different section."""
-    # Defense-in-depth: ids in tasks-live.json are integers, but the JS edit
-    # flow used to send strings ("34") because `_hilitId` reads from
-    # `row.dataset.id`. Coerce so the string-id case doesn't silently miss.
-    try:
-        task_id = int(task_id)
-    except (TypeError, ValueError):
-        _log_request(f"WARN apply_edit({task_id!r}) rejected: id not an int")
-        return False
+    behaviour; the user can drag if they want a different section.
+    String task_ids are accepted (find_task_by_id coerces) so the JS edit
+    flow doesn't silently 400 on row.dataset.id."""
     data = _load_state()
     if data is None:
         return False
     task, source = find_task_by_id(data, task_id)
     if task is None:
-        _log_request(f"WARN apply_edit({task_id}) rejected: task not found")
+        _log_request(f"WARN apply_edit({task_id!r}) rejected: task not found")
         return False
 
     new_name = (fields.get("task") or "").strip()

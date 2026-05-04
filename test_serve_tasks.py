@@ -1416,10 +1416,54 @@ def test_apply_edit_accepts_string_id(isolated_state):
 
 
 def test_apply_edit_rejects_unparseable_id(isolated_state):
-    """A non-numeric id string fails fast with a WARN, not a crash."""
+    """A non-numeric id string fails fast (returns False from
+    find_task_by_id's coercion), no crash."""
     assert not st.apply_edit("not-a-number", {"task": "x"})
     assert not st.apply_edit(None, {"task": "x"})
     assert not st.apply_edit({"oops": "dict"}, {"task": "x"})
+
+
+def test_post_edit_route_accepts_string_id(isolated_state):
+    """End-to-end: the /edit route handler from _ROUTES accepts a string
+    id. This is the actual bug path — the JS sends `{"id": "120"}` from
+    row.dataset.id, and the route lambda passes b.get("id") raw to
+    apply_edit. find_task_by_id's int() coercion is what closes the loop."""
+    handler = st.Handler._ROUTES["/edit"]
+    ok = handler({
+        "id": "120",  # string, as the JS sends
+        "task": "edited via route + string id",
+        "pri": "P2", "due": "—", "why": "—",
+        "link_label": "", "link_url": "",
+    })
+    assert ok is True
+    after = json.loads(isolated_state.read_text())
+    task = next(t for s in after["sections"] for t in s["tasks"] if t["id"] == 120)
+    assert task["task"] == "edited via route + string id"
+
+
+def test_find_task_by_id_coerces_string(data):
+    """find_task_by_id accepts string ids (the choke point that protects
+    every apply_X mutation against the row.dataset.id string-leak bug)."""
+    # Find any active task to get its id
+    target_id = data["sections"][0]["tasks"][0]["id"]
+    task_int, _ = st.find_task_by_id(data, target_id)
+    task_str, _ = st.find_task_by_id(data, str(target_id))
+    assert task_int is not None
+    assert task_str is not None
+    assert task_int is task_str  # same object, both lookups find it
+    # Garbage gracefully returns (None, None)
+    assert st.find_task_by_id(data, "not-an-int") == (None, None)
+    assert st.find_task_by_id(data, None) == (None, None)
+
+
+def test_show_toast_resets_undo_visibility(data):
+    """Toast race: after _showErrorToast hides the Undo button, a
+    subsequent _showToast must restore it. Without this, a successful
+    action's toast would have no Undo button until a manual page reload."""
+    html = st.build_page(data, view="dashboard")
+    # _showToast explicitly resets undoBtn.style.display so a previous
+    # error toast's `display: none` doesn't leak through cloneNode.
+    assert "undoBtn.style.display = ''" in html
 
 
 def test_open_edit_modal_coerces_id_to_int(data):
