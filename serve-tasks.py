@@ -3523,9 +3523,11 @@ def _load_state():
 def _save_state(data, now=None):
     """Stamp `updated` and persist `data` to tasks-live.json. Notifies SSE
     clients directly so click-driven mutations push instantly without
-    waiting for the polling watcher."""
+    waiting for the polling watcher.
+    Atomic write via _atomic_write_json — a partial write is never observed,
+    even if the process crashes mid-flush."""
     data["updated"] = (now or datetime.datetime.now()).strftime("%Y-%m-%d %H:%M")
-    JSON_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _atomic_write_json(JSON_FILE, data)
     _bump_state_version()
 
 
