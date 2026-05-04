@@ -829,6 +829,63 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 #ctx-menu .ctx-divider { height: 1px; background: #30363d; margin: 4px 0; }
 #ctx-menu .ctx-item.danger { color: #f85149; }
 #ctx-menu .ctx-item.danger:hover { background: rgba(248, 81, 73, 0.12); }
+
+/* ---------- Slack triage view ---------- */
+.slack-header {
+  margin: 0 0 12px; padding: 8px 12px;
+  background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+  font-size: 12px; color: #8b949e;
+}
+.slack-refresh-ts { color: #c9d1d9; font-family: ui-monospace, monospace; }
+.slack-refresh-rel { color: #c9d1d9; }
+.slack-stale {
+  display: inline-block; margin-left: 8px;
+  padding: 1px 6px; border-radius: 3px;
+  background: rgba(227, 179, 65, 0.15); color: #e3b341;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.slack-section.collapsed .slack-section-body { display: none; }
+.slack-row {
+  padding: 10px 12px; border-bottom: 1px solid #21262d;
+  display: grid; grid-template-columns: 1fr auto; column-gap: 16px;
+  grid-template-areas: "meta actions" "snippet actions";
+}
+.slack-row:last-child { border-bottom: none; }
+.slack-row:hover { background: #161b22; }
+.slack-meta { grid-area: meta; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.slack-sender { color: #e6edf3; font-weight: 600; }
+.slack-target { color: #8b949e; font-size: 12px; font-family: ui-monospace, monospace; }
+.slack-ts { color: #6e7681; font-size: 11px; text-decoration: none; }
+.slack-ts:hover { color: #58a6ff; text-decoration: underline; }
+.slack-snippet {
+  grid-area: snippet; margin-top: 4px;
+  color: #c9d1d9; font-size: 13px; line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.slack-actions {
+  grid-area: actions; display: flex; gap: 6px; align-self: center;
+}
+.slack-actions button {
+  background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+  border-radius: 4px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+}
+.slack-actions button:hover { background: #30363d; color: #e6edf3; }
+.slack-actions .slack-dismiss:hover { color: #f85149; border-color: #f85149; }
+.slack-actions .btn-icon { font-weight: 700; margin-right: 2px; }
+.slack-empty { padding: 16px 12px; color: #6e7681; font-style: italic; }
+.slack-noise {
+  margin: 12px 0 0; padding: 8px 12px;
+  color: #6e7681; font-size: 11px; font-style: italic;
+}
+.slack-empty-state {
+  padding: 32px 24px; text-align: center; color: #8b949e;
+}
+.slack-empty-state h3 { color: #c9d1d9; margin: 0 0 8px; }
+.slack-empty-state p { margin: 0; font-size: 13px; }
+.slack-empty-state code {
+  background: #161b22; padding: 1px 6px; border-radius: 3px;
+  font-family: ui-monospace, monospace; font-size: 12px;
+}
 """
 
 def _js_consts():
@@ -1229,6 +1286,9 @@ document.getElementById('sort-btn').addEventListener('click', function() {
 // without it, a stale .then() would clobber the new state.
 var _editTaskId = null;
 var _editFetchToken = 0;
+// Slack triage convert flow reuses the Add modal; this holds the source
+// item's id so the save handler can route to /slack/convert.
+var _slackConvertId = null;
 function _resetModal() {
   ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){
     var el = document.getElementById(id);
@@ -1279,6 +1339,7 @@ function closeModal() {
   _editFetchToken++;  // discard any in-flight /task fetch
   document.getElementById('modal-overlay').classList.remove('open');
   _editTaskId = null;
+  _slackConvertId = null;
   var modal = document.getElementById('modal');
   if (modal) modal.dataset.mode = 'add';
 }
@@ -1317,6 +1378,9 @@ document.getElementById('modal-save').addEventListener('click', function() {
   if (mode === 'edit') {
     payload.id = _editTaskId;
     _post('/edit', payload).then(_onSaved);
+  } else if (mode === 'slack-convert') {
+    payload.id = _slackConvertId;
+    _post('/slack/convert', payload).then(_onSaved);
   } else {
     _post('/add', payload).then(_onSaved);
   }
@@ -1671,6 +1735,81 @@ document.addEventListener('keydown', function(e) {
       row.classList.toggle('expanded');
       var nxt = row.nextElementSibling;
       if (nxt && nxt.classList.contains('cmp-detail')) nxt.classList.toggle('open');
+    }
+    return;
+  }
+});
+
+// ---------- Slack triage view ----------
+// The slack view embeds its item records as a JSON script tag so the
+// convert modal can pre-fill from a single in-page lookup, rather than
+// roundtripping to a /slack/<id> endpoint every click.
+function _slackItems() {
+  var el = document.getElementById('slack-items-data');
+  if (!el) return {};
+  try { return JSON.parse(el.textContent); }
+  catch (e) { return {}; }
+}
+
+function _openSlackConvertModal(item) {
+  if (!item) return;
+  _editFetchToken++;  // discard any in-flight /task fetch
+  _resetModal();
+  _editTaskId = null;
+  _slackConvertId = (item.channel_id || '') + ':' + (item.message_ts || '');
+  var sender = item.sender || '';
+  var name = item.is_dm
+    ? 'Reply to ' + sender
+    : 'Reply to ' + sender + ' in #' + (item.channel_name || '');
+  document.getElementById('m-task').value = name;
+  document.getElementById('m-why').value = item.snippet || '';
+  document.getElementById('m-link-label').value = 'Slack';
+  document.getElementById('m-link-url').value = item.permalink || '';
+  document.getElementById('m-pri').value = 'P2';
+  var modal = document.getElementById('modal');
+  modal.dataset.mode = 'slack-convert';
+  document.getElementById('modal-title').textContent = 'Convert Slack item';
+  document.getElementById('modal-save').textContent = 'Add task';
+  document.getElementById('modal-overlay').classList.add('open');
+  setTimeout(function(){ document.getElementById('m-task').focus(); }, 50);
+}
+
+document.addEventListener('click', function(e) {
+  // Convert button → open modal pre-filled
+  var convertBtn = e.target.closest('.slack-convert');
+  if (convertBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    var row = convertBtn.closest('.slack-row');
+    if (!row) return;
+    var item = _slackItems()[row.dataset.id];
+    _openSlackConvertModal(item);
+    return;
+  }
+  // Dismiss button → POST /slack/dismiss
+  var dismissBtn = e.target.closest('.slack-dismiss');
+  if (dismissBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    var drow = dismissBtn.closest('.slack-row');
+    if (!drow) return;
+    var id = drow.dataset.id;
+    if (id) _post('/slack/dismiss', {id: id}).then(function(r) {
+      if (r.ok) drow.remove();
+    });
+    return;
+  }
+  // Section header chevron in slack view → toggle the whole section's
+  // collapsed state. Runs BEFORE the generic expand-all handler because
+  // slack sections don't contain task rows for it to expand.
+  var slackChevron = e.target.closest('.slack-section [data-action="expand-all"]');
+  if (slackChevron) {
+    e.preventDefault();
+    e.stopPropagation();
+    var sec = slackChevron.closest('.slack-section');
+    if (sec) {
+      sec.classList.toggle('collapsed');
+      slackChevron.textContent = sec.classList.contains('collapsed') ? '▾' : '▴';
     }
     return;
   }
@@ -2255,7 +2394,7 @@ def render_compact_completed(tasks):
         + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 
-VIEWS = ["dashboard", "classic"]
+VIEWS = ["dashboard", "classic", "slack"]
 
 def _build_dashboard_body(data, week):
     parts = []  # counts strip now lives in the topbar (see _view_switcher_html)
@@ -2344,6 +2483,208 @@ def _build_classic_body(data, week):
     return "".join(parts)
 
 
+def _slack_relative_time(iso_str, now=None):
+    """Render a Slack item timestamp as a short relative form ("2h ago",
+    "3d ago"). Falls back to a literal date for things older than a week."""
+    if not iso_str:
+        return ""
+    try:
+        ts = datetime.datetime.fromisoformat(iso_str)
+    except (TypeError, ValueError):
+        return h(iso_str)
+    now = now or datetime.datetime.now(ts.tzinfo) if ts.tzinfo else datetime.datetime.now()
+    delta = now - ts
+    secs = int(delta.total_seconds())
+    if secs < 60: return "just now"
+    if secs < 3600: return f"{secs // 60}m ago"
+    if secs < 86400: return f"{secs // 3600}h ago"
+    if secs < 7 * 86400: return f"{secs // 86400}d ago"
+    return ts.strftime("%Y-%m-%d")
+
+
+def _slack_active_permalinks(data):
+    """Set of permalinks present in any non-done, non-cancelled task's links.
+    Used as a legacy fallback for items converted before slack-converted.json
+    existed (or for tasks where the user manually added the Slack link)."""
+    out = set()
+    inactive = {"done", "cancelled"}
+    for section in data.get("sections", []):
+        for task in section.get("tasks", []):
+            if task.get("status") in inactive:
+                continue
+            for link in task.get("links", []) or []:
+                url = (link or {}).get("url")
+                if url:
+                    out.add(url)
+    return out
+
+
+SLACK_TIER_LABEL = {
+    "reply_needed":     "Reply Needed",
+    "review":           "Review",
+    "already_handled":  "Already Handled",
+}
+
+
+def _render_slack_section(label, items, *, color, collapsed=False):
+    rows = []
+    for it in items:
+        sender = it.get("sender") or "?"
+        is_dm = bool(it.get("is_dm"))
+        target = (
+            f'@{sender}' if is_dm
+            else f'#{it.get("channel_name") or ""}'
+        )
+        ts_iso = it.get("ts") or ""
+        ts_rel = _slack_relative_time(ts_iso)
+        permalink = it.get("permalink") or "#"
+        snippet = it.get("snippet") or ""
+        # Composite id matches the JS lookup key
+        item_id = f"{it.get('channel_id','')}:{it.get('message_ts','')}"
+        rows.append(
+            f'<div class="slack-row" data-id="{h(item_id)}">'
+            f'<div class="slack-meta">'
+            f'<span class="slack-sender">{h(sender)}</span>'
+            f'<span class="slack-target">{h(target)}</span>'
+            f'<a class="slack-ts" href="{h(permalink)}" '
+            f'target="_blank" rel="noopener noreferrer" '
+            f'title="{h(ts_iso)}">{h(ts_rel)} ↗</a>'
+            f'</div>'
+            f'<div class="slack-snippet">{h(snippet)}</div>'
+            f'<div class="slack-actions">'
+            f'<button class="slack-convert" type="button">'
+            f'<span class="btn-icon">+</span> Convert to task</button>'
+            f'<button class="slack-dismiss" type="button">'
+            f'<span class="btn-icon">×</span> Dismiss</button>'
+            f'</div>'
+            f'</div>'
+        )
+    body = "".join(rows) or '<div class="slack-empty">Nothing here.</div>'
+    cls = "slack-section" + (" collapsed" if collapsed else "")
+    return (
+        f'<div class="task-card {cls}" data-tier="{h(label)}">'
+        f'{_section_header(label, color, expandable=True, subtitle=str(len(items)))}'
+        f'<div class="slack-section-body">{body}</div>'
+        f'</div>'
+    )
+
+
+def _build_slack_body(data, week):
+    parts = []
+
+    def card(html, variant=""):
+        if not html:
+            return ""
+        cls = "task-card" + (f" {variant}" if variant else "")
+        return f'<div class="{cls}">{html}</div>'
+
+    snapshot = load_slack_snapshot()
+    if snapshot is None:
+        return (
+            '<div class="task-card slack-empty-state">'
+            '<h3>No Slack snapshot yet</h3>'
+            '<p>Run <code>/slack</code> in Claude Code to populate this view. '
+            'The skill will write '
+            '<code>~/todo/slack-triage.json</code> and this page will refresh.'
+            '</p></div>'
+        )
+    if snapshot.get("_error") == "malformed":
+        return (
+            '<div class="task-card slack-empty-state">'
+            '<h3>Snapshot is unreadable</h3>'
+            '<p><code>~/todo/slack-triage.json</code> exists but failed to parse. '
+            'Re-run <code>/slack</code> to regenerate.</p></div>'
+        )
+    if snapshot.get("_error") == "version":
+        got = snapshot.get("got")
+        return (
+            '<div class="task-card slack-empty-state">'
+            '<h3>Snapshot version not supported</h3>'
+            f'<p>Expected version <code>{SLACK_SNAPSHOT_VERSION}</code>, got '
+            f'<code>{h(got)}</code>. Update either the dashboard or the '
+            f'slack-triage skill.</p></div>'
+        )
+
+    items = snapshot.get("items", []) or []
+    dismissed = load_slack_id_set(SLACK_DISMISSED_FILE)
+    converted = load_slack_id_set(SLACK_CONVERTED_FILE)
+    active_perms = _slack_active_permalinks(data)
+
+    def is_visible(it):
+        cid = it.get("channel_id", "")
+        ts  = it.get("message_ts", "")
+        comp = f"{cid}:{ts}"
+        if comp in dismissed: return False
+        if comp in converted: return False
+        perm = it.get("permalink") or ""
+        if perm and perm in active_perms: return False
+        return True
+
+    visible = [it for it in items if is_visible(it)]
+
+    # Header: last refreshed + stale badge
+    gen_at = snapshot.get("generated_at", "")
+    rel = _slack_relative_time(gen_at) if gen_at else "unknown"
+    is_stale = False
+    try:
+        gen_dt = datetime.datetime.fromisoformat(gen_at) if gen_at else None
+    except (TypeError, ValueError):
+        gen_dt = None
+    if gen_dt is not None:
+        now = datetime.datetime.now(gen_dt.tzinfo) if gen_dt.tzinfo else datetime.datetime.now()
+        if (now - gen_dt).total_seconds() > 24 * 3600:
+            is_stale = True
+    stale_badge = ' <span class="slack-stale">stale</span>' if is_stale else ''
+    header = (
+        f'<div class="slack-header">'
+        f'Last refreshed <span class="slack-refresh-ts">{h(gen_at) or "—"}</span>'
+        f' (<span class="slack-refresh-rel">{h(rel)}</span>){stale_badge}'
+        f'</div>'
+    )
+    parts.append(header)
+
+    # Three sections
+    by_tier = {"reply_needed": [], "review": [], "already_handled": []}
+    for it in visible:
+        tier = it.get("tier") or "review"
+        by_tier.setdefault(tier, []).append(it)
+
+    parts.append(_render_slack_section(
+        SLACK_TIER_LABEL["reply_needed"], by_tier["reply_needed"],
+        color="#f0883e", collapsed=False,
+    ))
+    parts.append(_render_slack_section(
+        SLACK_TIER_LABEL["review"], by_tier["review"],
+        color="#388bfd", collapsed=False,
+    ))
+    parts.append(_render_slack_section(
+        SLACK_TIER_LABEL["already_handled"], by_tier["already_handled"],
+        color="#3fb950", collapsed=True,
+    ))
+
+    # Noise summary line
+    noise = snapshot.get("noise") or {}
+    if noise:
+        bits = ", ".join(f"{h(v)} in {h(k)}" if not k.startswith("bot") else f"{h(v)} bot pings"
+                         for k, v in noise.items())
+        parts.append(f'<p class="slack-noise">Noise: {bits}</p>')
+
+    # Item-data lookup table for the convert modal pre-fill
+    items_json = json.dumps(
+        {f"{it.get('channel_id','')}:{it.get('message_ts','')}": it for it in visible},
+        ensure_ascii=False,
+    )
+    # Embed via a JSON-typed script tag — avoids HTML-escape pitfalls in inline JS.
+    # The closing-tag guard protects against any literal "</script>" in snippets.
+    items_json_safe = items_json.replace("</script", "<\\/script")
+    parts.append(
+        f'<script type="application/json" id="slack-items-data">'
+        f'{items_json_safe}</script>'
+    )
+
+    return "".join(parts)
+
+
 def _view_switcher_html(current, week="", pills_html=""):
     items = "".join(
         f'<a href="?view={v}" class="vs-btn{" active" if v == current else ""}">{v.title()}</a>'
@@ -2384,7 +2725,12 @@ def build_page(data, view="dashboard"):
     if view not in VIEWS:
         view = "dashboard"
     week = data.get("week", "")
-    body = _build_classic_body(data, week) if view == "classic" else _build_dashboard_body(data, week)
+    if view == "slack":
+        body = _build_slack_body(data, week)
+    elif view == "classic":
+        body = _build_classic_body(data, week)
+    else:
+        body = _build_dashboard_body(data, week)
     switcher = _view_switcher_html(view, week, pills_html=render_counts_strip(data))
     return (
         f'<!DOCTYPE html><html><head>'
