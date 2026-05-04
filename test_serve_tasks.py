@@ -1467,14 +1467,20 @@ def _slack_item(channel_id="C1", message_ts="111.222", tier="reply_needed",
 @pytest.fixture
 def slack_state(tmp_path, monkeypatch):
     """Point SLACK_*_FILE constants at temp paths. Returns a dict of the
-    three Path objects so tests can write/read directly."""
+    three Path objects so tests can write/read directly. Dismissed/converted
+    are JSONL append-logs."""
     triage = tmp_path / "slack-triage.json"
-    dismissed = tmp_path / "slack-dismissed.json"
-    converted = tmp_path / "slack-converted.json"
+    dismissed = tmp_path / "slack-dismissed.jsonl"
+    converted = tmp_path / "slack-converted.jsonl"
     monkeypatch.setattr(st, "SLACK_SNAPSHOT_FILE", triage)
     monkeypatch.setattr(st, "SLACK_DISMISSED_FILE", dismissed)
     monkeypatch.setattr(st, "SLACK_CONVERTED_FILE", converted)
     return {"triage": triage, "dismissed": dismissed, "converted": converted}
+
+
+def _read_jsonl(path):
+    """Read a JSONL file as a list of dicts. Test helper."""
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def test_slack_view_renders_three_sections(data, slack_state):
@@ -1530,34 +1536,42 @@ def test_slack_dismiss_records_id_and_filters_item(data, slack_state):
     item_id = "CABC:1.111"
     assert st.apply_slack_dismiss(item_id)
 
-    # Dismissed file written with the id
-    saved = json.loads(slack_state["dismissed"].read_text())
-    assert saved == {"version": 1, "ids": [item_id]}
+    # Dismissed file written as JSONL: one record per line
+    records = _read_jsonl(slack_state["dismissed"])
+    assert len(records) == 1
+    assert records[0]["id"] == item_id
+    assert records[0]["kind"] == "message"
+    assert "ts" in records[0]
 
     # Re-render: the dismissed item is filtered out, the other survives
     html = st.build_page(data, view="slack")
     assert "Bob" in html
-    # The dismissed item's permalink no longer in the page
     assert "p1111" not in html
 
 
-def test_slack_dismiss_idempotent(slack_state):
-    """Dismissing the same id twice should leave one entry, not two."""
+def test_slack_dismiss_appends_each_call(slack_state):
+    """Append-only log: each dismiss adds a line. The active set dedupes
+    naturally at filter-time, so user-facing behaviour stays idempotent
+    even though the file isn't."""
     st.apply_slack_dismiss("C1:1.1")
     st.apply_slack_dismiss("C1:1.1")
-    saved = json.loads(slack_state["dismissed"].read_text())
-    assert saved["ids"] == ["C1:1.1"]
+    records = _read_jsonl(slack_state["dismissed"])
+    assert len(records) == 2  # two appends, but...
+    msgs, _ = st.load_slack_dismissed()
+    assert msgs == {"C1:1.1"}  # ...the active set has just the one id
 
 
 def test_slack_dismiss_rejects_bad_input(slack_state):
     assert not st.apply_slack_dismiss(None)
     assert not st.apply_slack_dismiss("")
     assert not st.apply_slack_dismiss(123)
+    # Bad scope
+    assert not st.apply_slack_dismiss("C1:1.1", scope="bogus")
 
 
 def test_slack_convert_creates_task_and_records_id(isolated_state, slack_state):
     """apply_slack_convert calls apply_add (writing to JSON_FILE / core file)
-    AND appends id to slack-converted.json."""
+    AND appends id to slack-converted.jsonl."""
     ok = st.apply_slack_convert({
         "id": "CABC:1.111",
         "task": "Reply to Maria in #hotsauce-squad",
@@ -1566,13 +1580,14 @@ def test_slack_convert_creates_task_and_records_id(isolated_state, slack_state):
         "link_url": "https://spotify.slack.com/archives/CABC/p1111",
     })
     assert ok
-    # Task added to JSON_FILE
     after = json.loads(isolated_state.read_text())
     names = [t["task"] for s in after["sections"] for t in s["tasks"]]
     assert "Reply to Maria in #hotsauce-squad" in names
-    # Converted id recorded
-    saved = json.loads(slack_state["converted"].read_text())
-    assert saved == {"version": 1, "ids": ["CABC:1.111"]}
+    # Converted id recorded as a JSONL row
+    records = _read_jsonl(slack_state["converted"])
+    assert len(records) == 1
+    assert records[0]["id"] == "CABC:1.111"
+    assert "ts" in records[0]
 
 
 def test_slack_convert_failure_does_not_record(isolated_state, slack_state):
@@ -1715,8 +1730,8 @@ def test_slack_dismiss_via_post_route(isolated_state, slack_state):
     assert "/slack/convert" in routes
     handler = routes["/slack/dismiss"]
     assert handler({"id": "CXX:9.9"})
-    saved = json.loads(slack_state["dismissed"].read_text())
-    assert "CXX:9.9" in saved["ids"]
+    records = _read_jsonl(slack_state["dismissed"])
+    assert any(r["id"] == "CXX:9.9" for r in records)
 
 
 def test_slack_atomic_write_uses_replace(tmp_path):
@@ -1759,3 +1774,113 @@ def test_slack_view_no_noise_line_when_empty(data, slack_state):
     slack_state["triage"].write_text(json.dumps(snap))
     html = st.build_page(data, view="slack")
     assert "Noise:" not in html
+
+
+# ---------- JSONL log: TTL + compaction ----------
+
+def test_slack_dismiss_ttl_drops_expired_records(slack_state):
+    """A dismissal older than SLACK_DISMISS_TTL_DAYS must NOT appear in
+    the active set — even though its line is still in the JSONL file."""
+    import datetime as _dt
+    old_ts = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=30)).isoformat(timespec="seconds")
+    fresh_ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    slack_state["dismissed"].write_text(
+        json.dumps({"id": "C1:OLD", "kind": "message", "ts": old_ts}) + "\n" +
+        json.dumps({"id": "C1:FRESH", "kind": "message", "ts": fresh_ts}) + "\n"
+    )
+    msgs, threads = st.load_slack_dismissed()
+    assert msgs == {"C1:FRESH"}
+    assert threads == set()
+
+
+def test_slack_dismiss_ttl_keeps_records_without_ts(slack_state):
+    """Records missing or with malformed `ts` are kept (better safe than
+    silently losing dismissals)."""
+    slack_state["dismissed"].write_text(
+        json.dumps({"id": "C1:NO_TS", "kind": "message"}) + "\n" +
+        json.dumps({"id": "C1:BAD_TS", "kind": "message", "ts": "not-a-date"}) + "\n"
+    )
+    msgs, _ = st.load_slack_dismissed()
+    assert msgs == {"C1:NO_TS", "C1:BAD_TS"}
+
+
+def test_slack_dismiss_kind_thread_routed_correctly(slack_state):
+    """Records with kind=thread populate the thread set, not the message set."""
+    import datetime as _dt
+    ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    slack_state["dismissed"].write_text(
+        json.dumps({"id": "C1:MSG", "kind": "message", "ts": ts}) + "\n" +
+        json.dumps({"id": "C1:THR", "kind": "thread", "ts": ts}) + "\n"
+    )
+    msgs, threads = st.load_slack_dismissed()
+    assert msgs == {"C1:MSG"}
+    assert threads == {"C1:THR"}
+
+
+def test_slack_dismiss_thread_filters_all_thread_items(data, slack_state):
+    """Dismissing the parent of a thread hides every item with that
+    thread_ts — including replies whose own message_ts hasn't been
+    dismissed."""
+    parent_ts = "1.111"
+    snap = _slack_snapshot(items=[
+        _slack_item(channel_id="C1", message_ts=parent_ts),  # the thread root
+        _slack_item(channel_id="C1", message_ts="2.222",
+                    thread_ts=parent_ts, sender="ReplyAuthor"),
+    ])
+    slack_state["triage"].write_text(json.dumps(snap))
+    # Dismiss the thread (root id, scope=thread)
+    assert st.apply_slack_dismiss(f"C1:{parent_ts}", scope="thread")
+    html = st.build_page(data, view="slack")
+    # Neither the root nor the reply is rendered
+    assert "ReplyAuthor" not in html
+
+
+def test_slack_log_malformed_line_is_skipped(slack_state):
+    """A single corrupt line must not break parsing of surrounding ones."""
+    import datetime as _dt
+    ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    slack_state["dismissed"].write_text(
+        json.dumps({"id": "C1:OK1", "kind": "message", "ts": ts}) + "\n" +
+        "{this is not valid json\n" +
+        json.dumps({"id": "C1:OK2", "kind": "message", "ts": ts}) + "\n"
+    )
+    msgs, _ = st.load_slack_dismissed()
+    assert msgs == {"C1:OK1", "C1:OK2"}
+
+
+def test_slack_log_compaction_drops_expired(slack_state, monkeypatch):
+    """Once the file exceeds SLACK_LOG_COMPACT_BYTES, the next write
+    triggers compaction — keeping only TTL-active records."""
+    import datetime as _dt
+    monkeypatch.setattr(st, "SLACK_LOG_COMPACT_BYTES", 200)
+    old_ts = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=30)).isoformat(timespec="seconds")
+    fresh_ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    # Seed a file that exceeds 200 bytes with a mix of expired + fresh
+    expired_lines = "\n".join(
+        json.dumps({"id": f"C1:OLD{i}", "kind": "message", "ts": old_ts})
+        for i in range(20)
+    )
+    fresh_line = json.dumps({"id": "C1:KEEP", "kind": "message", "ts": fresh_ts})
+    slack_state["dismissed"].write_text(expired_lines + "\n" + fresh_line + "\n")
+    assert slack_state["dismissed"].stat().st_size > 200
+    # Trigger a write — appends a new fresh record AND triggers compaction
+    assert st.apply_slack_dismiss("C1:NEW")
+    records = _read_jsonl(slack_state["dismissed"])
+    ids = {r["id"] for r in records}
+    # Old records compacted out; fresh + new survive
+    assert "C1:KEEP" in ids
+    assert "C1:NEW" in ids
+    assert all(not k.startswith("C1:OLD") for k in ids)
+
+
+def test_slack_converted_not_ttl_filtered(slack_state):
+    """Converted records persist regardless of age — the converted log is
+    the dashboard's memory of "this Slack item became a task". Only the
+    dismissed log has TTL."""
+    import datetime as _dt
+    very_old = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=365)).isoformat(timespec="seconds")
+    slack_state["converted"].write_text(
+        json.dumps({"id": "C1:ANCIENT", "ts": very_old}) + "\n"
+    )
+    converted = st.load_slack_converted()
+    assert "C1:ANCIENT" in converted

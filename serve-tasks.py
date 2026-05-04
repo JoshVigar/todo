@@ -44,9 +44,17 @@ REQUEST_LOG = Path.home() / "todo" / "serve-tasks-requests.log"
 PORT = 6419
 
 SLACK_SNAPSHOT_FILE  = Path.home() / "todo" / "slack-triage.json"
-SLACK_DISMISSED_FILE = Path.home() / "todo" / "slack-dismissed.json"
-SLACK_CONVERTED_FILE = Path.home() / "todo" / "slack-converted.json"
+SLACK_DISMISSED_FILE = Path.home() / "todo" / "slack-dismissed.jsonl"
+SLACK_CONVERTED_FILE = Path.home() / "todo" / "slack-converted.jsonl"
 SLACK_SNAPSHOT_VERSION = 1
+# Dismissals naturally expire after this many days. Items still present in
+# a `/slack` snapshot after the TTL re-surface — typically the right call
+# (a long-stale thread that's *still* active probably warrants another look).
+SLACK_DISMISS_TTL_DAYS = 14
+# Lazy-compaction trigger: once a JSONL log exceeds this size, the next
+# write rewrites it keeping only TTL-active records. Keeps active set tiny
+# without needing a separate cron.
+SLACK_LOG_COMPACT_BYTES = 100_000
 
 
 def _log_request(line):
@@ -2606,16 +2614,22 @@ def _build_slack_body(data, week):
         )
 
     items = snapshot.get("items", []) or []
-    dismissed = load_slack_id_set(SLACK_DISMISSED_FILE)
-    converted = load_slack_id_set(SLACK_CONVERTED_FILE)
+    dismissed_msgs, dismissed_threads = load_slack_dismissed()
+    converted = load_slack_converted()
     active_perms = _slack_active_permalinks(data)
 
     def is_visible(it):
         cid = it.get("channel_id", "")
         ts  = it.get("message_ts", "")
-        comp = f"{cid}:{ts}"
-        if comp in dismissed: return False
-        if comp in converted: return False
+        msg_key = f"{cid}:{ts}"
+        if msg_key in dismissed_msgs: return False
+        if msg_key in converted: return False
+        # A top-level message acts as its own thread root; dismissing the
+        # parent as "thread" hides the whole conversation including the
+        # parent itself.
+        thread_root = it.get("thread_ts") or ts
+        thread_key = f"{cid}:{thread_root}"
+        if thread_key in dismissed_threads: return False
         perm = it.get("permalink") or ""
         if perm and perm in active_perms: return False
         return True
@@ -3677,46 +3691,147 @@ def load_slack_snapshot():
     return data
 
 
-def load_slack_id_set(path):
-    """Read a slack-{dismissed,converted}.json file. Returns set of ids,
-    empty if missing or malformed (non-fatal — just means nothing tracked yet)."""
+def _now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def load_slack_log(path, ttl_days=None):
+    """Read an append-only JSONL log. Returns a list of records (dicts).
+    If `ttl_days` is set, drop records whose `ts` is older than the cutoff.
+    Records without a parseable `ts` are kept (better safe than sorry —
+    we'd rather show a never-dismissed item than silently lose dismissals).
+    Malformed individual lines are skipped silently — one bad line should
+    not break the whole view."""
     if not path.exists():
-        return set()
+        return []
+    cutoff = None
+    if ttl_days is not None:
+        cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(days=ttl_days))
+    out = []
     try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return set()
-    ids = data.get("ids", [])
-    return set(i for i in ids if isinstance(i, str))
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if cutoff is not None:
+                    ts_str = rec.get("ts")
+                    if isinstance(ts_str, str):
+                        try:
+                            rec_ts = datetime.datetime.fromisoformat(ts_str)
+                            if rec_ts.tzinfo is None:
+                                rec_ts = rec_ts.replace(tzinfo=datetime.timezone.utc)
+                            if rec_ts < cutoff:
+                                continue
+                        except ValueError:
+                            pass
+                out.append(rec)
+    except OSError:
+        return []
+    return out
 
 
-def _save_slack_id_set(path, ids):
-    _atomic_write_json(path, {"version": 1, "ids": sorted(ids)})
+def _append_slack_log(path, record):
+    """Append one JSON record + newline. POSIX guarantees writes < PIPE_BUF
+    (4096) are atomic on regular files when O_APPEND is in effect, which
+    `mode='a'` provides. Our records are ~150 bytes — well under the limit."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line)
 
 
-def apply_slack_dismiss(item_id):
+def _atomic_write_jsonl(path, records):
+    """Rewrite a JSONL log atomically — used by compaction."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for rec in records:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _maybe_compact_slack_log(path, ttl_days):
+    """If the file exceeds SLACK_LOG_COMPACT_BYTES, rewrite keeping only
+    TTL-active records. Cheap no-op below the threshold."""
+    try:
+        if path.stat().st_size < SLACK_LOG_COMPACT_BYTES:
+            return
+    except OSError:
+        return
+    records = load_slack_log(path, ttl_days=ttl_days)
+    _atomic_write_jsonl(path, records)
+
+
+def load_slack_dismissed():
+    """Returns (msg_ids, thread_ids) — two sets, both TTL-filtered.
+    `msg_ids` are composite "channel_id:message_ts" keys; `thread_ids` are
+    composite "channel_id:thread_ts" keys (a top-level message dismissed as
+    a thread uses its own message_ts as the thread root)."""
+    msgs, threads = set(), set()
+    for rec in load_slack_log(SLACK_DISMISSED_FILE, ttl_days=SLACK_DISMISS_TTL_DAYS):
+        rid = rec.get("id")
+        if not isinstance(rid, str) or not rid:
+            continue
+        if rec.get("kind") == "thread":
+            threads.add(rid)
+        else:
+            msgs.add(rid)
+    return msgs, threads
+
+
+def load_slack_converted():
+    """Returns set of converted ids. NOT TTL-filtered: the converted record
+    is the dashboard's "this Slack item became task N" memory and should
+    persist as long as the task does. If the file ever grows large in
+    practice, we can add TTL or compact-against-existing-tasks then."""
+    out = set()
+    for rec in load_slack_log(SLACK_CONVERTED_FILE):
+        rid = rec.get("id")
+        if isinstance(rid, str) and rid:
+            out.add(rid)
+    return out
+
+
+def apply_slack_dismiss(item_id, scope="message"):
+    """Append a dismissal record. `scope` is "message" (default — hides
+    only this message_ts) or "thread" (hides every item with this
+    thread_ts; the caller passes the thread root id, NOT the reply id)."""
     if not isinstance(item_id, str) or not item_id:
         return False
+    if scope not in ("message", "thread"):
+        return False
+    record = {"id": item_id, "kind": scope, "ts": _now_iso()}
     with _slack_lock:
-        ids = load_slack_id_set(SLACK_DISMISSED_FILE)
-        ids.add(item_id)
-        _save_slack_id_set(SLACK_DISMISSED_FILE, ids)
+        _append_slack_log(SLACK_DISMISSED_FILE, record)
+        _maybe_compact_slack_log(SLACK_DISMISSED_FILE, ttl_days=SLACK_DISMISS_TTL_DAYS)
     _bump_state_version()
     return True
 
 
 def apply_slack_convert(body):
-    """Add a task via apply_add, then mark this Slack item as converted.
-    On apply_add failure, do NOT mark converted (item stays in the view)."""
+    """Add a task via apply_add, then append a converted record. On
+    apply_add failure, do NOT append (item stays in the view)."""
     item_id = body.get("id")
     if not isinstance(item_id, str) or not item_id:
         return False
     if not apply_add(body):
         return False
+    record = {"id": item_id, "ts": _now_iso()}
     with _slack_lock:
-        ids = load_slack_id_set(SLACK_CONVERTED_FILE)
-        ids.add(item_id)
-        _save_slack_id_set(SLACK_CONVERTED_FILE, ids)
+        _append_slack_log(SLACK_CONVERTED_FILE, record)
     _bump_state_version()
     return True
 
