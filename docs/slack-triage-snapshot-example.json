@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "generated_at": "2026-05-04T14:32:11+01:00",
+  "items": [
+    {
+      "channel_id": "C123ABC",
+      "message_ts": "1714834327.001234",
+      "thread_ts": null,
+      "tier": "reply_needed",
+      "is_dm": false,
+      "sender": "Maria",
+      "channel_name": "hotsauce-squad",
+      "permalink": "https://spotify.slack.com/archives/C123ABC/p1714834327001234",
+      "snippet": "blocked on you for the GHE config rollout — can you take a look?",
+      "ts": "2026-05-04T12:15:03+01:00",
+      "action_hint": "Reply",
+      "context": "connects to HOTS-1953"
+    },
+    {
+      "channel_id": "DLORNA001",
+      "message_ts": "1714900000.000111",
+      "thread_ts": null,
+      "tier": "reply_needed",
+      "is_dm": true,
+      "sender": "Lorna",
+      "channel_name": "",
+      "permalink": "https://spotify.slack.com/archives/DLORNA001/p1714900000000111",
+      "snippet": "Quick one — got numbers for PAT vs fine-grained yet?",
+      "ts": "2026-05-04T13:46:40+01:00"
+    },
+    {
+      "channel_id": "C456DEF",
+      "message_ts": "1714820000.005555",
+      "thread_ts": "1714819000.005000",
+      "tier": "review",
+      "is_dm": false,
+      "sender": "Dennis",
+      "channel_name": "github-spotify-alpha",
+      "permalink": "https://spotify.slack.com/archives/C456DEF/p1714820000005555",
+      "snippet": "FYI — pushed the new replication script to staging. No action needed yet.",
+      "ts": "2026-05-04T08:13:20+01:00"
+    },
+    {
+      "channel_id": "C789GHI",
+      "message_ts": "1714750000.001200",
+      "thread_ts": null,
+      "tier": "already_handled",
+      "is_dm": false,
+      "sender": "Robert",
+      "channel_name": "hotsauce-alerts",
+      "permalink": "https://spotify.slack.com/archives/C789GHI/p1714750000001200",
+      "snippet": "Replication lag spike — looks like the network blip recovered.",
+      "ts": "2026-05-03T15:46:40+01:00"
+    }
+  ],
+  "noise": {
+    "#random": 12,
+    "bot_notifications": 8,
+    "#announcements": 3
+  }
+}
