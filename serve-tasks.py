@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -41,6 +42,11 @@ if not os.environ.get("SERVE_TASKS_NO_WATCH"):
 JSON_FILE = Path.home() / "todo" / "tasks-live.json"
 REQUEST_LOG = Path.home() / "todo" / "serve-tasks-requests.log"
 PORT = 6419
+
+SLACK_SNAPSHOT_FILE  = Path.home() / "todo" / "slack-triage.json"
+SLACK_DISMISSED_FILE = Path.home() / "todo" / "slack-dismissed.json"
+SLACK_CONVERTED_FILE = Path.home() / "todo" / "slack-converted.json"
+SLACK_SNAPSHOT_VERSION = 1
 
 
 def _log_request(line):
@@ -112,6 +118,36 @@ SECTION_COLORS = {
 # read-mutate-write of tasks-live.json across handlers and clobbers writes.
 _state_lock = threading.Lock()
 
+# Separate lock for slack-{triage,dismissed,converted}.json read-modify-writes.
+# Always acquired AFTER _state_lock when both are needed (convert uses both).
+_slack_lock = threading.Lock()
+
+
+def _safe_mtime(path):
+    """getmtime() that returns 0 if the file doesn't exist."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0
+
+
+def _atomic_write_json(path, data):
+    """Write JSON via tempfile + os.replace so a partial write is never observed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
 # Notify SSE clients whenever the rendered state could have changed.
 # `_state_version` increments on every observed mtime change of the JSON,
 # this script, or the current-week core file.
@@ -120,7 +156,8 @@ _state_version = 0
 
 
 def _state_signature():
-    """Combined mtime tuple — None if any required file is missing."""
+    """Combined mtime tuple — None if any required file is missing.
+    Slack files are optional; missing → 0 so their absence doesn't gate signal."""
     try:
         json_m = os.path.getmtime(JSON_FILE)
         src_m  = os.path.getmtime(os.path.abspath(__file__))
@@ -130,7 +167,10 @@ def _state_signature():
         core_m = os.path.getmtime(current_core_path())
     except OSError:
         core_m = 0
-    return (json_m, src_m, core_m)
+    slack_t = _safe_mtime(SLACK_SNAPSHOT_FILE)
+    slack_d = _safe_mtime(SLACK_DISMISSED_FILE)
+    slack_c = _safe_mtime(SLACK_CONVERTED_FILE)
+    return (json_m, src_m, core_m, slack_t, slack_d, slack_c)
 
 
 _sse_clients = 0  # active /events stream count; protected by _state_cond
@@ -3265,6 +3305,74 @@ def add_to_core_file(name, pri, due, why, links, week=None):
     core_path.write_text("\n".join(lines))
 
 
+# ---------------------------------------------------------------------------
+# Slack triage snapshot / dismiss / convert
+# ---------------------------------------------------------------------------
+
+def load_slack_snapshot():
+    """Read ~/todo/slack-triage.json. Returns:
+      None                    — file missing
+      {"_error": "malformed"} — file present but unparseable
+      {"_error": "version", "got": N} — version mismatch
+      <dict>                  — valid snapshot
+    Reads do not take _slack_lock — atomic os.replace makes partial reads
+    impossible. The lock is only for read-modify-write paths."""
+    if not SLACK_SNAPSHOT_FILE.exists():
+        return None
+    try:
+        data = json.loads(SLACK_SNAPSHOT_FILE.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        _log_request(f"WARN slack-triage.json malformed: {e}")
+        return {"_error": "malformed"}
+    if data.get("version") != SLACK_SNAPSHOT_VERSION:
+        return {"_error": "version", "got": data.get("version")}
+    return data
+
+
+def load_slack_id_set(path):
+    """Read a slack-{dismissed,converted}.json file. Returns set of ids,
+    empty if missing or malformed (non-fatal — just means nothing tracked yet)."""
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return set()
+    ids = data.get("ids", [])
+    return set(i for i in ids if isinstance(i, str))
+
+
+def _save_slack_id_set(path, ids):
+    _atomic_write_json(path, {"version": 1, "ids": sorted(ids)})
+
+
+def apply_slack_dismiss(item_id):
+    if not isinstance(item_id, str) or not item_id:
+        return False
+    with _slack_lock:
+        ids = load_slack_id_set(SLACK_DISMISSED_FILE)
+        ids.add(item_id)
+        _save_slack_id_set(SLACK_DISMISSED_FILE, ids)
+    _bump_state_version()
+    return True
+
+
+def apply_slack_convert(body):
+    """Add a task via apply_add, then mark this Slack item as converted.
+    On apply_add failure, do NOT mark converted (item stays in the view)."""
+    item_id = body.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        return False
+    if not apply_add(body):
+        return False
+    with _slack_lock:
+        ids = load_slack_id_set(SLACK_CONVERTED_FILE)
+        ids.add(item_id)
+        _save_slack_id_set(SLACK_CONVERTED_FILE, ids)
+    _bump_state_version()
+    return True
+
+
 def apply_add(task_data):
     """Add a new task to JSON and core file."""
     data = _load_state()
@@ -3361,7 +3469,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 core_mtime = os.path.getmtime(current_core_path())
             except OSError:
                 core_mtime = 0
-            combined_mtime = max(json_mtime, src_mtime, core_mtime)
+            slack_t = _safe_mtime(SLACK_SNAPSHOT_FILE)
+            slack_d = _safe_mtime(SLACK_DISMISSED_FILE)
+            slack_c = _safe_mtime(SLACK_CONVERTED_FILE)
+            combined_mtime = max(json_mtime, src_mtime, core_mtime,
+                                 slack_t, slack_d, slack_c)
             etag = f'"{combined_mtime:.6f}-{view}"'
             last_modified = email.utils.formatdate(int(combined_mtime), usegmt=True)
         except Exception:
@@ -3417,6 +3529,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         "/rename":       lambda b: apply_rename(b.get("id"), b.get("name", "")),
         "/add":          lambda b: apply_add(b),
         "/edit":         lambda b: apply_edit(b.get("id"), b),
+        "/slack/dismiss": lambda b: apply_slack_dismiss(b.get("id")),
+        "/slack/convert": lambda b: apply_slack_convert(b),
     }
 
     def do_POST(self):
