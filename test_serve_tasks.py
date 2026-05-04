@@ -1398,6 +1398,37 @@ def test_apply_edit_no_priority_emoji(isolated_state):
     assert "- [ ] No-emoji renamed" in new_text
 
 
+def test_apply_edit_accepts_string_id(isolated_state):
+    """Regression: the JS edit flow used to send `"id": "34"` (string) when
+    the modal was opened via the `e` hotkey on a row highlighted by click —
+    `row.dataset.id` is always a string. find_task_by_id then missed on
+    int==str and apply_edit returned False (HTTP 400) silently. Coerce at
+    the boundary so string ids work as defense-in-depth."""
+    ok = st.apply_edit("120", {
+        "task": "edited via string id",
+        "pri": "P2", "due": "—", "why": "—",
+        "link_label": "", "link_url": "",
+    })
+    assert ok is True
+    after = json.loads(isolated_state.read_text())
+    task = next(t for s in after["sections"] for t in s["tasks"] if t["id"] == 120)
+    assert task["task"] == "edited via string id"
+
+
+def test_apply_edit_rejects_unparseable_id(isolated_state):
+    """A non-numeric id string fails fast with a WARN, not a crash."""
+    assert not st.apply_edit("not-a-number", {"task": "x"})
+    assert not st.apply_edit(None, {"task": "x"})
+    assert not st.apply_edit({"oops": "dict"}, {"task": "x"})
+
+
+def test_open_edit_modal_coerces_id_to_int(data):
+    """JS-side defense: `_openEditModal` parses its argument as int because
+    `_hilitId` (sourced from row.dataset.id) is a string."""
+    html = st.build_page(data, view="dashboard")
+    assert "taskId = parseInt(taskId, 10)" in html
+
+
 def test_modal_fetch_token_guards_against_race(data):
     """_openEditModal must capture a fetch token at call time and bail in
     the .then() if it's been superseded by close/openAdd/another openEdit.

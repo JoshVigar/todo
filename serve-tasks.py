@@ -1361,6 +1361,11 @@ function _openAddModal() {
   setTimeout(function(){ document.getElementById('m-task').focus(); }, 50);
 }
 function _openEditModal(taskId) {
+  // Coerce to integer at the boundary — _hilitId comes from
+  // `row.dataset.id` which is always a string. Without this, the eventual
+  // /edit POST sends `"id": "34"` and find_task_by_id misses on int==str.
+  taskId = parseInt(taskId, 10);
+  if (isNaN(taskId)) return;
   var token = ++_editFetchToken;
   fetch('/task?id=' + encodeURIComponent(taskId)).then(function(r) {
     if (token !== _editFetchToken) return;  // superseded by close/openAdd/openEdit
@@ -3478,11 +3483,20 @@ def apply_edit(task_id, fields):
     the new name is empty or contains control chars (would corrupt markdown).
     Section is NOT auto-moved on priority change — matches `apply_priority_update`
     behaviour; the user can drag if they want a different section."""
+    # Defense-in-depth: ids in tasks-live.json are integers, but the JS edit
+    # flow used to send strings ("34") because `_hilitId` reads from
+    # `row.dataset.id`. Coerce so the string-id case doesn't silently miss.
+    try:
+        task_id = int(task_id)
+    except (TypeError, ValueError):
+        _log_request(f"WARN apply_edit({task_id!r}) rejected: id not an int")
+        return False
     data = _load_state()
     if data is None:
         return False
     task, source = find_task_by_id(data, task_id)
     if task is None:
+        _log_request(f"WARN apply_edit({task_id}) rejected: task not found")
         return False
 
     new_name = (fields.get("task") or "").strip()
