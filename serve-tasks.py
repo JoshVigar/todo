@@ -4085,19 +4085,26 @@ def apply_add(task_data):
     name = (task_data.get("task") or "").strip()
     if not name:
         return False
+    if _RENAME_FORBIDDEN.search(name):
+        return False
     pri = task_data.get("pri") or "P2"
     due = task_data.get("due") or "\u2014"
     why = task_data.get("why") or "\u2014"
+    if why not in ("\u2014", "\u2014") and _RENAME_FORBIDDEN.search(why):
+        return False
     link_label = (task_data.get("link_label") or "").strip()
     link_url = (task_data.get("link_url") or "").strip()
     links = [{"label": link_label, "url": link_url}] if link_label and link_url else []
+
+    completed_at = (task_data.get("completed_at") or "").strip()
+    if completed_at and not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', completed_at):
+        return False
 
     target_title = target_section_for_pri(pri)
     target = next((s for s in data.get("sections", []) if s.get("title") == target_title), None)
     if target is None:
         return False
 
-    completed_at = (task_data.get("completed_at") or "").strip()
     task_id = next_task_id(data)
     now = datetime.datetime.now()
 

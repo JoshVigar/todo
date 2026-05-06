@@ -2250,3 +2250,28 @@ def test_apply_add_failure_returns_false(isolated_state):
     """Failed adds should still return False, not a dict."""
     result = st.apply_add({"task": "", "pri": "P2"})
     assert result is False
+
+
+def test_apply_add_rejects_control_chars(isolated_state):
+    """apply_add must reject names with newlines or control chars."""
+    assert not st.apply_add({"task": "foo\nbar"})
+    assert not st.apply_add({"task": "tab\there"})
+    assert not st.apply_add({"task": "ok name", "why": "evil\nwhy"})
+
+
+def test_apply_add_rejects_invalid_completed_at(isolated_state):
+    """Garbage completed_at values must be rejected."""
+    assert not st.apply_add({"task": "Bad time", "completed_at": "abc"})
+    assert not st.apply_add({"task": "Bad time", "completed_at": "25:00"})
+    assert not st.apply_add({"task": "Bad time", "completed_at": "12:60"})
+    assert not st.apply_add({"task": "Bad time", "completed_at": "1:30"})
+
+
+def test_apply_add_accepts_valid_completed_at(isolated_state):
+    """Valid HH:MM times should work."""
+    result = st.apply_add({"task": "Morning task", "completed_at": "09:15"})
+    assert isinstance(result, dict)
+    assert result["time"] == "09:15"
+    result2 = st.apply_add({"task": "Late task", "completed_at": "23:59"})
+    assert isinstance(result2, dict)
+    assert result2["time"] == "23:59"
