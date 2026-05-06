@@ -1207,7 +1207,7 @@ def test_apply_edit_updates_json_and_core(isolated_state):
         "link_label": "HOTS-9999",
         "link_url": "https://example.com/9999",
     })
-    assert ok is True
+    assert ok
     new_data = json.loads(isolated_state.read_text())
     new_task = next(t for s in new_data["sections"] for t in s["tasks"] if t.get("id") == 120)
     assert new_task["task"] == "Renamed via apply_edit"
@@ -1258,7 +1258,7 @@ def test_apply_edit_preserves_carried_metadata(isolated_state):
         "pri": "P1", "due": "15:00", "why": "—",
         "link_label": "", "link_url": "",
     })
-    assert ok is True
+    assert ok
     new_text = st.current_core_path("W18").read_text()
     assert "_(carried from W17)_" in new_text
     assert "Carried task RENAMED" in new_text
@@ -1297,7 +1297,7 @@ def test_apply_edit_preserves_extra_links(isolated_state):
         "link_label": "replaced",
         "link_url": "https://example.com/replaced",
     })
-    assert ok is True
+    assert ok
     new_data = json.loads(isolated_state.read_text())
     new_task = next(t for s in new_data["sections"] for t in s["tasks"] if t.get("id") == 120)
     # Position 0 replaced, position 1 preserved
@@ -1323,7 +1323,7 @@ def test_apply_edit_clearing_link_keeps_extras(isolated_state):
         "due": "—", "why": "—",
         "link_label": "", "link_url": "",
     })
-    assert ok is True
+    assert ok
     new_data = json.loads(isolated_state.read_text())
     new_task = next(t for s in new_data["sections"] for t in s["tasks"] if t.get("id") == 120)
     assert new_task["links"] == [{"label": "kept", "url": "https://example.com/kept"}]
@@ -1358,7 +1358,7 @@ def test_apply_edit_preserves_carried_with_real_why(isolated_state):
         "due": "15:00", "why": "now waiting on legal",
         "link_label": "", "link_url": "",
     })
-    assert ok is True
+    assert ok
     new_text = st.current_core_path("W18").read_text()
     # New line has both carried and the updated why, in the right order
     assert (
@@ -1392,7 +1392,7 @@ def test_apply_edit_no_priority_emoji(isolated_state):
         "due": "—", "why": "—",
         "link_label": "", "link_url": "",
     })
-    assert ok is True
+    assert ok
     new_text = st.current_core_path("W18").read_text()
     # Line preserved without an emoji prefix
     assert "- [ ] No-emoji renamed" in new_text
@@ -1409,7 +1409,7 @@ def test_apply_edit_accepts_string_id(isolated_state):
         "pri": "P2", "due": "—", "why": "—",
         "link_label": "", "link_url": "",
     })
-    assert ok is True
+    assert ok
     after = json.loads(isolated_state.read_text())
     task = next(t for s in after["sections"] for t in s["tasks"] if t["id"] == 120)
     assert task["task"] == "edited via string id"
@@ -1435,7 +1435,7 @@ def test_post_edit_route_accepts_string_id(isolated_state):
         "pri": "P2", "due": "—", "why": "—",
         "link_label": "", "link_url": "",
     })
-    assert ok is True
+    assert ok
     after = json.loads(isolated_state.read_text())
     task = next(t for s in after["sections"] for t in s["tasks"] if t["id"] == 120)
     assert task["task"] == "edited via route + string id"
@@ -2066,3 +2066,187 @@ def test_slack_converted_not_ttl_filtered(slack_state):
     )
     converted = st.load_slack_converted()
     assert "C1:ANCIENT" in converted
+
+
+# ---------------------------------------------------------------------------
+# Add-completed feature
+# ---------------------------------------------------------------------------
+
+def test_apply_add_completed_goes_to_completed_today(isolated_state):
+    """When completed_at is set, the task lands in completed_today, not sections."""
+    result = st.apply_add({
+        "task": "Retro completed task",
+        "pri": "P2",
+        "completed_at": "14:30",
+    })
+    assert isinstance(result, dict)
+    assert result["task"] == "Retro completed task"
+    assert result["time"] == "14:30"
+    assert result["status"] == "done"
+
+    data = json.loads(isolated_state.read_text())
+    ids_in_sections = [
+        t["id"] for s in data["sections"] for t in s["tasks"]
+    ]
+    assert result["id"] not in ids_in_sections
+    completed_ids = [t["id"] for t in data["completed_today"]]
+    assert result["id"] in completed_ids
+
+
+def test_apply_add_completed_writes_done_in_core_file(isolated_state):
+    """The completed task should appear under ## Done in the core file."""
+    st.apply_add({
+        "task": "Core file done task",
+        "pri": "P1",
+        "completed_at": "09:15",
+    })
+    core_text = st.current_core_path().read_text()
+    assert "[x]" in core_text.split("Core file done task")[0].split("\n")[-1]
+    assert "_(completed:" in core_text
+    assert "Core file done task" in core_text
+
+
+def test_apply_add_completed_with_links(isolated_state):
+    """Links should be included in the core file Done entry."""
+    st.apply_add({
+        "task": "Linked done task",
+        "pri": "P2",
+        "completed_at": "16:00",
+        "link_label": "HOTS-999",
+        "link_url": "https://example.com/999",
+    })
+    core_text = st.current_core_path().read_text()
+    assert "HOTS-999" in core_text
+    assert "https://example.com/999" in core_text
+
+    data = json.loads(isolated_state.read_text())
+    entry = next(t for t in data["completed_today"] if t["task"] == "Linked done task")
+    assert len(entry["links"]) == 1
+    assert entry["links"][0]["label"] == "HOTS-999"
+
+
+def test_apply_add_without_completed_at_is_active(isolated_state):
+    """Normal add (no completed_at) still goes to active sections."""
+    result = st.apply_add({"task": "Normal active task", "pri": "P3"})
+    assert isinstance(result, dict)
+    assert result["status"] == "open"
+
+    data = json.loads(isolated_state.read_text())
+    ids_in_sections = [
+        t["id"] for s in data["sections"] for t in s["tasks"]
+    ]
+    assert result["id"] in ids_in_sections
+
+
+def test_apply_add_empty_completed_at_is_active(isolated_state):
+    """Empty string completed_at should be treated as not-completed."""
+    result = st.apply_add({
+        "task": "Not actually completed",
+        "pri": "P2",
+        "completed_at": "",
+    })
+    assert isinstance(result, dict)
+    assert result["status"] == "open"
+
+    data = json.loads(isolated_state.read_text())
+    ids_in_sections = [
+        t["id"] for s in data["sections"] for t in s["tasks"]
+    ]
+    assert result["id"] in ids_in_sections
+
+
+def test_add_completed_modal_elements_present(data):
+    """The add modal should contain the completed checkbox, label, and time input."""
+    html = st.build_page(data)
+    assert 'id="m-completed"' in html
+    assert 'type="checkbox"' in html
+    assert 'id="m-completed-time"' in html
+    assert "Completed" in html
+
+
+def test_completed_row_hidden_in_edit_mode(data):
+    """CSS should hide the completed section in edit mode."""
+    html = st.build_page(data)
+    assert '#modal[data-mode="edit"] .modal-completed-section' in html
+
+
+def test_completed_row_hidden_in_slack_convert_mode(data):
+    """CSS should hide the completed section in slack-convert mode."""
+    html = st.build_page(data)
+    assert '#modal[data-mode="slack-convert"] .modal-completed-section' in html
+
+
+def test_shift_a_hotkey_opens_add_completed(data):
+    """Shift+A should call _openAddCompletedModal."""
+    html = st.build_page(data)
+    assert "_openAddCompletedModal" in html
+    assert "e.code === 'KeyA'" in html
+
+
+def test_help_overlay_lists_add_completed_shortcut(data):
+    """The help overlay should document Shift+A."""
+    html = st.build_page(data)
+    assert "Add completed task" in html
+
+
+# ---------------------------------------------------------------------------
+# POST response body tests
+# ---------------------------------------------------------------------------
+
+def test_apply_add_returns_task_dict(isolated_state):
+    """apply_add should return the created task object, not True."""
+    result = st.apply_add({"task": "Response body test", "pri": "P2"})
+    assert isinstance(result, dict)
+    assert result["task"] == "Response body test"
+    assert "id" in result
+
+
+def test_apply_status_change_returns_dict(isolated_state):
+    """apply_status_change should return a task dict."""
+    result = st.apply_status_change(120)
+    assert isinstance(result, dict)
+
+
+def test_apply_status_change_done_returns_completed_entry(isolated_state):
+    """When completing a task, the completed_today entry should be returned."""
+    result = st.apply_status_change(120, force_status="done")
+    assert isinstance(result, dict)
+    assert "time" in result
+    assert result["id"] == 120
+
+
+def test_apply_edit_returns_task_dict(isolated_state):
+    result = st.apply_edit(120, {"task": "Edited name", "pri": "P1"})
+    assert isinstance(result, dict)
+    assert result["task"] == "Edited name"
+
+
+def test_apply_rename_returns_task_dict(isolated_state):
+    result = st.apply_rename(120, "Renamed task")
+    assert isinstance(result, dict)
+    assert result["task"] == "Renamed task"
+
+
+def test_apply_priority_update_returns_task_dict(isolated_state):
+    result = st.apply_priority_update(120)
+    assert isinstance(result, dict)
+    assert "pri" in result
+
+
+def test_apply_sort_returns_ok_dict(isolated_state):
+    result = st.apply_sort()
+    assert isinstance(result, dict)
+    assert result.get("ok") is True
+
+
+def test_apply_cancel_returns_ok_with_id(isolated_state):
+    result = st.apply_cancel(120)
+    assert isinstance(result, dict)
+    assert result["id"] == 120
+    assert "task" in result
+
+
+def test_apply_add_failure_returns_false(isolated_state):
+    """Failed adds should still return False, not a dict."""
+    result = st.apply_add({"task": "", "pri": "P2"})
+    assert result is False

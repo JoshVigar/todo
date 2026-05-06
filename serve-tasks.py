@@ -520,6 +520,8 @@ tr.row-highlight > td { background: rgba(56, 139, 253, 0.08) !important; }
   padding: 24px 28px; min-width: 360px; max-width: 96vw;
   font-size: 13px;
 }
+.help-columns { display: flex; gap: 32px; }
+.help-columns > div { flex: 1; min-width: 0; }
 #help h3 { font-size: 14px; margin-bottom: 14px; color: #e6edf3; }
 #help table {
   width: 100%; border-collapse: collapse;
@@ -622,23 +624,50 @@ p.counts { margin: 6px 0; color: #8b949e; font-size: 12px; }
   background: #161b22; border: 1px solid #30363d; border-radius: 8px;
   padding: 20px; width: 460px; max-width: 96vw;
 }
-#modal h3 { font-size: 14px; margin-bottom: 14px; color: #e6edf3; }
-#modal label { display: block; font-size: 11px; color: #8b949e; margin-bottom: 3px; }
+#modal h3 { font-size: 15px; margin-bottom: 14px; color: #e6edf3; }
+#modal label { display: block; font-size: 12px; color: #a8b3c0; margin-bottom: 4px; }
 #modal input, #modal select {
   width: 100%; background: #0d1117; border: 1px solid #30363d;
-  color: #e6edf3; border-radius: 4px; padding: 5px 8px; font-size: 12px;
+  color: #e6edf3; border-radius: 4px; padding: 6px 9px; font-size: 13px;
   margin-bottom: 10px;
 }
+.modal-sep { border-top: 1px solid #484f58; margin: 2px 0 10px; }
 .modal-row { display: flex; gap: 8px; }
 .modal-row > div { flex: 1; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.modal-completed-section {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-top: 10px; margin-bottom: 10px;
+}
+#modal .modal-completed-section input { width: auto; margin-bottom: 0; }
+.modal-completed-section > label {
+  margin-bottom: 0; cursor: pointer; font-size: 12px; color: #a8b3c0;
+}
+.modal-completed-section input[type="checkbox"] {
+  width: 14px; height: 14px; min-width: 14px;
+  margin: 0; accent-color: #238636; cursor: pointer;
+  position: relative; top: 2px;
+}
+.modal-completed-at { font-size: 12px; color: #a8b3c0; }
+.modal-completed-time-wrap { display: none; align-items: baseline; gap: 8px; }
+.modal-completed-time-wrap.visible { display: flex; }
+.modal-completed-time-col { display: flex; flex-direction: column; align-items: center; }
+#m-completed-time { width: 64px; text-align: center; padding: 4px 6px; font-size: 12px; }
+.modal-completed-hint { font-size: 11px; color: #6e7681; margin-top: 2px; white-space: nowrap; }
+.modal-footer {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 8px;
+}
+#modal[data-mode="edit"] .modal-sep,
+#modal[data-mode="edit"] .modal-completed-section,
+#modal[data-mode="slack-convert"] .modal-sep,
+#modal[data-mode="slack-convert"] .modal-completed-section { display: none; }
 #modal-cancel {
-  background: none; border: 1px solid #30363d; color: #8b949e;
-  padding: 5px 14px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  background: none; border: 1px solid #30363d; color: #a8b3c0;
+  padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 13px;
 }
 #modal-save {
   background: #238636; border: none; color: #fff;
-  padding: 5px 14px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 13px;
 }
 #modal-cancel:hover { background: #30363d; }
 #modal-save:hover { background: #2ea043; }
@@ -1352,6 +1381,39 @@ function _resetModal() {
   });
   var pri = document.getElementById('m-pri');
   if (pri) pri.value = 'P2';
+  var cb = document.getElementById('m-completed');
+  if (cb) cb.checked = false;
+  _toggleCompleted(false);
+}
+function _nowHHMM() {
+  var d = new Date();
+  return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
+}
+function _toggleCompleted(on) {
+  var wrap = document.getElementById('m-completed-wrap');
+  var hint = document.getElementById('m-completed-hint');
+  if (on) {
+    wrap.classList.add('visible');
+    hint.textContent = 'Empty = now (' + _nowHHMM() + ')';
+  } else {
+    wrap.classList.remove('visible');
+    hint.textContent = '';
+    document.getElementById('m-completed-time').value = '';
+  }
+}
+document.getElementById('m-completed').addEventListener('change', function() {
+  _toggleCompleted(this.checked);
+});
+document.getElementById('m-completed-time').addEventListener('input', function() {
+  var v = this.value.replace(/[^0-9]/g, '');
+  if (v.length > 4) v = v.slice(0, 4);
+  if (v.length > 2) v = v.slice(0, 2) + ':' + v.slice(2);
+  this.value = v;
+});
+function _openAddCompletedModal() {
+  _openAddModal();
+  document.getElementById('m-completed').checked = true;
+  _toggleCompleted(true);
 }
 function _openAddModal() {
   _editFetchToken++;
@@ -1430,6 +1492,11 @@ document.getElementById('modal-save').addEventListener('click', function() {
     link_label: document.getElementById('m-link-label').value.trim(),
     link_url: document.getElementById('m-link-url').value.trim()
   };
+  var cb = document.getElementById('m-completed');
+  if (cb && cb.checked) {
+    var ct = document.getElementById('m-completed-time');
+    payload.completed_at = ct.value || _nowHHMM();
+  }
   var mode = document.getElementById('modal').dataset.mode || 'add';
   function _onSaved(r) {
     if (!r.ok) return;
@@ -1765,6 +1832,9 @@ document.addEventListener('keydown', function(e) {
     }
     if (e.code === 'KeyP' && _hilitId != null) {
       e.preventDefault(); _post('/update-pri', {id: parseInt(_hilitId)}); return;
+    }
+    if (e.code === 'KeyA') {
+      e.preventDefault(); _openAddCompletedModal(); return;
     }
     return;
   }
@@ -2879,18 +2949,27 @@ def build_page(data, view="dashboard"):
         f'<div><label>Link URL</label>'
         f'<input id="m-link-url" type="url" placeholder="https://..."></div>'
         f'</div>'
+        f'<div class="modal-sep"></div>'
+        f'<div class="modal-completed-section">'
+        f'<input type="checkbox" id="m-completed">'
+        f'<label for="m-completed">Already completed</label>'
+        f'<div class="modal-completed-time-wrap" id="m-completed-wrap">'
+        f'<span class="modal-completed-at">at</span>'
+        f'<div class="modal-completed-time-col">'
+        f'<input type="text" id="m-completed-time" inputmode="numeric"'
+        f' placeholder="HH:MM" maxlength="5">'
+        f'<div class="modal-completed-hint" id="m-completed-hint"></div>'
+        f'</div></div></div>'
         f'<div class="modal-footer">'
         f'<button id="modal-cancel">Cancel</button>'
         f'<button id="modal-save">Add task</button>'
         f'</div></div></div>'
         f'<div id="help-overlay"><div id="help">'
         f'<h3>Keyboard shortcuts</h3>'
-        f'<table>'
+        f'<div class="help-columns"><div><table>'
         f'<tr class="help-section"><th colspan="2">Navigation</th></tr>'
-        f'<tr><td>Highlight next row</td><td><kbd>j</kbd> <kbd>↓</kbd></td></tr>'
-        f'<tr><td>Highlight previous row</td><td><kbd>k</kbd> <kbd>↑</kbd></td></tr>'
-        f'<tr><td>Click a row to highlight it</td><td>—</td></tr>'
-        f'<tr><td>Expand / collapse highlighted row</td><td><kbd>Enter</kbd></td></tr>'
+        f'<tr><td>Highlight next / previous</td><td><kbd>j</kbd> <kbd>k</kbd></td></tr>'
+        f'<tr><td>Expand / collapse row</td><td><kbd>Enter</kbd></td></tr>'
         f'<tr><td>Jump to Focus / High / Lower</td>'
         f'<td><kbd>Shift</kbd>+<kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd></td></tr>'
         f'<tr class="help-section"><th colspan="2">Mutate highlighted row</th></tr>'
@@ -2898,19 +2977,21 @@ def build_page(data, view="dashboard"):
         f'<tr><td>Cycle status</td><td><kbd>Shift</kbd>+<kbd>S</kbd></td></tr>'
         f'<tr><td>Cycle priority</td><td><kbd>Shift</kbd>+<kbd>P</kbd></td></tr>'
         f'<tr class="help-section"><th colspan="2">Add &amp; sort</th></tr>'
-        f'<tr><td>Open Add task modal</td><td><kbd>a</kbd></td></tr>'
-        f'<tr><td>Submit modal (Add or Edit)</td><td><kbd>⌘</kbd>+<kbd>Enter</kbd></td></tr>'
-        f'<tr><td>Sort tasks by priority</td><td><kbd>s</kbd></td></tr>'
+        f'<tr><td>Add task</td><td><kbd>a</kbd></td></tr>'
+        f'<tr><td>Add completed task</td><td><kbd>Shift</kbd>+<kbd>A</kbd></td></tr>'
+        f'<tr><td>Submit modal</td><td><kbd>⌘</kbd>+<kbd>Enter</kbd></td></tr>'
+        f'<tr><td>Sort by priority</td><td><kbd>s</kbd></td></tr>'
+        f'</table></div><div><table>'
         f'<tr class="help-section"><th colspan="2">Filter</th></tr>'
         f'<tr><td>Open filter popup</td><td><kbd>/</kbd></td></tr>'
-        f'<tr><td>Click topbar pill to filter (multi-select)</td><td>—</td></tr>'
+        f'<tr><td>Filter by pill (multi-select)</td><td>click pill</td></tr>'
         f'<tr class="help-section"><th colspan="2">View &amp; UI</th></tr>'
-        f'<tr><td>Expand / collapse all detail panels</td><td><kbd>x</kbd></td></tr>'
-        f'<tr><td>Refresh the view</td><td><kbd>r</kbd></td></tr>'
-        f'<tr><td>Toggle dashboard / classic view</td><td><kbd>c</kbd></td></tr>'
-        f'<tr><td>Close modal · collapse all · clear menu</td><td><kbd>Esc</kbd></td></tr>'
+        f'<tr><td>Expand / collapse all</td><td><kbd>x</kbd></td></tr>'
+        f'<tr><td>Refresh</td><td><kbd>r</kbd></td></tr>'
+        f'<tr><td>Toggle dashboard / classic</td><td><kbd>c</kbd></td></tr>'
+        f'<tr><td>Close / clear / collapse</td><td><kbd>Esc</kbd></td></tr>'
         f'<tr><td>Show this help</td><td><kbd>?</kbd></td></tr>'
-        f'</table>'
+        f'</table></div></div>'
         f'<button id="help-close">Close</button>'
         f'</div></div>'
         f'<div id="tooltip"></div>'
@@ -3798,6 +3879,25 @@ def add_to_core_file(name, pri, due, why, links, week=None):
     core_path.write_text("\n".join(lines))
 
 
+def add_completed_to_core_file(name, pri, completed_time, links, week=None):
+    """Insert a completed task directly into the ## Done section of the core file."""
+    core_path = current_core_path(week)
+    try:
+        lines = core_path.read_text().split("\n")
+    except FileNotFoundError:
+        return
+    emoji = PRI_EMOJI.get(pri, "")
+    today_str = datetime.date.today().isoformat()
+    ts = f"{today_str} {completed_time}"
+    task_line = f"- [x] {emoji} {name}" if emoji else f"- [x] {name}"
+    if links:
+        link_strs = " · ".join(f"[{l['label']}]({l['url']})" for l in links)
+        task_line += f" ({link_strs})"
+    task_line += f" _(completed: {ts})_"
+    _insert_under_dated_section(lines, "Done", task_line, today_str)
+    core_path.write_text("\n".join(lines))
+
+
 # ---------------------------------------------------------------------------
 # Slack triage snapshot / dismiss / convert
 # ---------------------------------------------------------------------------
@@ -3997,9 +4097,29 @@ def apply_add(task_data):
     if target is None:
         return False
 
+    completed_at = (task_data.get("completed_at") or "").strip()
+    task_id = next_task_id(data)
+    now = datetime.datetime.now()
+
+    if completed_at:
+        completed_entry = {
+            "num": 999,
+            "id": task_id,
+            "task": name,
+            "links": links,
+            "time": completed_at,
+            "status": "done",
+            "from_section": target_title,
+        }
+        data.setdefault("completed_today", []).append(completed_entry)
+        renumber_tasks(data)
+        _save_state(data, now)
+        add_completed_to_core_file(name, pri, completed_at, links, week=data.get("week"))
+        return completed_entry
+
     new_task = {
         "num": 999,
-        "id": next_task_id(data),
+        "id": task_id,
         "pri": pri,
         "task": name,
         "due": due,
