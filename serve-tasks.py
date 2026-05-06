@@ -3074,7 +3074,7 @@ def apply_priority_update(task_id):
     task["pri"] = new_pri
     _save_state(data, now)
     update_core_file_priority(task.get("task", ""), new_pri, now, week=data.get("week"))
-    return True
+    return task
 
 
 def renumber_tasks(data):
@@ -3188,7 +3188,7 @@ def apply_sort():
     renumber_tasks(data)
     _save_state(data)
     sync_core_file_order(data)
-    return True
+    return {"ok": True}
 
 
 def apply_uncomplete(num):
@@ -3263,7 +3263,7 @@ def apply_uncomplete(num):
 
     renumber_tasks(data)
     _save_state(data, now)
-    return True
+    return new_task
 
 
 def apply_status_change(num, force_status=None):
@@ -3289,20 +3289,23 @@ def apply_status_change(num, force_status=None):
 
     if new_status == "done":
         source_section["tasks"] = [t for t in source_section["tasks"] if t.get("id") != task_id]
-        data.setdefault("completed_today", []).append({
+        completed_entry = {
             "num": num,
             "id": task_id,
             "task": task_name,
             "links": task.get("links", []),
             "time": now.strftime("%H:%M"),
             "from_section": source_section.get("title", ""),
-        })
+        }
+        data.setdefault("completed_today", []).append(completed_entry)
+        result = completed_entry
     else:
         task["status"] = new_status
+        result = task
 
     _save_state(data, now)
     update_core_file(task_name, new_status, now, week=data.get("week"))
-    return True
+    return result
 
 # In-memory undo buffer for cancelled tasks. Keyed by task id; entries
 # expire after UNDO_WINDOW_S so the buffer can't grow unbounded.
@@ -3370,7 +3373,7 @@ def apply_cancel(task_id):
 
     renumber_tasks(data)
     _save_state(data, now)
-    return True
+    return {"ok": True, "id": task_id, "task": task_name}
 
 
 def update_core_file_name(old_name, new_name, week=None, pri=None):
@@ -3560,7 +3563,7 @@ def apply_edit(task_id, fields):
     # Re-snapshot Today's Focus if this task is in it (focus list keys by name).
     if source is not None:
         _snapshot_focus_if_touched(data, source.get("title", ""))
-    return True
+    return task
 
 
 def apply_rename(task_id, new_name):
@@ -3580,7 +3583,7 @@ def apply_rename(task_id, new_name):
         return False
     old_name = task.get("task", "")
     if old_name == new_name:
-        return True  # no-op success
+        return task  # no-op success
     pri = task.get("pri")
     task["task"] = new_name
     _save_state(data)
@@ -3589,7 +3592,7 @@ def apply_rename(task_id, new_name):
     # focus list by old name — re-snapshot so the new name shows up.
     if source_section is not None:
         _snapshot_focus_if_touched(data, source_section.get("title", ""))
-    return True
+    return task
 
 
 def apply_uncancel(task_id):
@@ -3651,7 +3654,7 @@ def apply_uncancel(task_id):
     _snapshot_focus_if_touched(data, rec["src_title"])
     renumber_tasks(data)
     _save_state(data, now)
-    return True
+    return rec["task"]
 
 
 def _load_state():
@@ -3717,7 +3720,7 @@ def apply_move_section(task_id, target_title):
         return False
 
     if src_section is tgt_section:
-        return True  # already in target section — no-op
+        return src_task  # already in target section — no-op
 
     src_title = src_section.get("title")
     tgt_title = tgt_section.get("title")
@@ -3731,7 +3734,7 @@ def apply_move_section(task_id, target_title):
     _save_state(data, now)
     sync_core_file_order(data)
     _snapshot_focus_if_touched(data, src_title, tgt_title)
-    return True
+    return src_task
 
 
 def apply_reorder(from_num, to_num, before=True):
@@ -3769,7 +3772,7 @@ def apply_reorder(from_num, to_num, before=True):
     _save_state(data, now)
     sync_core_file_order(data)
     _snapshot_focus_if_touched(data, src_title, tgt_title)
-    return True
+    return {"ok": True}
 
 
 def add_to_core_file(name, pri, due, why, links, week=None):
@@ -3949,7 +3952,7 @@ def apply_slack_dismiss(item_id, scope="message"):
         _append_slack_log(SLACK_DISMISSED_FILE, record)
         _maybe_compact_slack_log(SLACK_DISMISSED_FILE, ttl_days=SLACK_DISMISS_TTL_DAYS)
     _bump_state_version()
-    return True
+    return {"ok": True}
 
 
 def apply_slack_convert(body):
@@ -3964,13 +3967,14 @@ def apply_slack_convert(body):
     item_id = body.get("id")
     if not isinstance(item_id, str) or not item_id:
         return False
-    if not apply_add(body):
+    added = apply_add(body)
+    if not added:
         return False
     record = {"id": item_id, "ts": _now_iso()}
     with _slack_lock:
         _append_slack_log(SLACK_CONVERTED_FILE, record)
     _bump_state_version()
-    return True
+    return added
 
 
 def apply_add(task_data):
@@ -4009,7 +4013,7 @@ def apply_add(task_data):
     renumber_tasks(data)
     _save_state(data)
     add_to_core_file(name, pri, due, why, links, week=data.get("week"))
-    return True
+    return new_task
 
 
 # ---------------------------------------------------------------------------
@@ -4146,10 +4150,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length)) if length else {}
         with _state_lock:
-            ok = handler(body)
-        status = 200 if ok else 400
-        self.send_response(status)
-        self.end_headers()
+            result = handler(body)
+        if isinstance(result, dict):
+            status = 200
+            payload = json.dumps(result).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        else:
+            status = 200 if result else 400
+            self.send_response(status)
+            self.end_headers()
         ms = int((time.perf_counter() - t0) * 1000)
         # `id` is the most useful identifier for clicks; fall back to from/to for /reorder
         id_part = body.get("id")
