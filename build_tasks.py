@@ -247,6 +247,31 @@ def main():
 
     # ── Classify tasks into sections ─────────────────────────────────────
     focus_names = tasklib.parse_core_focus(journal_lines, weekday_header)
+    today_had_explicit_focus = bool(focus_names)
+
+    # Carry forward uncompleted focus tasks from the most recent previous day
+    prev_focus_names = []
+    for days_back in range(1, 8):
+        candidate = today - datetime.timedelta(days=days_back)
+        cand_header = f"## {candidate.strftime('%A')} {candidate.isoformat()}"
+        cand_iso_year, cand_week, _ = candidate.isocalendar()
+        if cand_iso_year == today.isocalendar()[0] and cand_week == week_num:
+            cand_focus = tasklib.parse_core_focus(journal_lines, cand_header)
+        else:
+            cand_journal = journal_path.parent / f"{cand_iso_year}-W{cand_week:02d}.md"
+            if cand_journal.exists():
+                cand_lines = cand_journal.read_text().split("\n")
+                cand_focus = tasklib.parse_core_focus(cand_lines, cand_header)
+            else:
+                cand_focus = []
+        if cand_focus:
+            prev_focus_names = cand_focus
+            break
+    today_focus_lower = {n.lower() for n in focus_names}
+    for pfn in prev_focus_names:
+        if pfn.lower() not in today_focus_lower:
+            focus_names.append(pfn)
+            today_focus_lower.add(pfn.lower())
 
     focus_tasks = []
     monitoring_tasks = []
@@ -277,8 +302,8 @@ def main():
     # Also filter focus_tasks for completion-wins
     focus_tasks = [t for t in focus_tasks if t["task"].lower() not in completion_wins]
 
-    # Auto-derive focus if journal had no Core Focus section
-    if not focus_names and not focus_tasks:
+    # Auto-derive focus if no explicit today section and no matched tasks
+    if not today_had_explicit_focus and not focus_tasks:
         candidates = [t for t in high_tasks
                       if t["status_override"] in (None, "in_progress")]
         focus_tasks = candidates[:3]
