@@ -1137,8 +1137,8 @@ def test_find_task_line_exact_match():
     (The other big risk path: silent JSON↔markdown divergence.)"""
     lines = [
         "## Active",
-        "- [ ] 🟠 Add timeline/repo details to ELM migration tracking doc (link)",
-        "- [ ] 🟠 Add context from Friday ELM meeting to ELM migration tracking doc (link)",
+        "- [ ] 🟠 Add timeline/repo details to ELM migration tracking doc ([link](https://example.com))",
+        "- [ ] 🟠 Add context from Friday ELM meeting to ELM migration tracking doc ([link](https://example.com))",
         "## Done",
     ]
     assert st.find_task_line(lines, "Add timeline/repo details to ELM migration tracking doc") == 1

@@ -192,17 +192,24 @@ def parse_done_section(core_lines, target_date=None):
 
 # ── Date helpers ─────────────────────────────────────────────────────────────
 
-def week_monday(week_str):
-    """Convert 'W18' to the Monday ISO date of that week (current year).
+def week_monday(week_str, year=None):
+    """Convert 'W18' to the Monday ISO date of that week.
+
+    Uses `year` if provided, else current year. For high week numbers
+    (W52/W53) queried in early January, falls back to previous year if
+    the computed date would be in the future.
 
     Returns ISO date string like '2026-04-27'.
     """
     w = int(week_str.lstrip("Ww"))
-    year = datetime.date.today().year
-    # ISO week: Monday of week w
-    jan4 = datetime.date(year, 1, 4)
+    y = year or datetime.date.today().year
+    jan4 = datetime.date(y, 1, 4)
     start_of_w1 = jan4 - datetime.timedelta(days=jan4.weekday())
     monday = start_of_w1 + datetime.timedelta(weeks=w - 1)
+    if year is None and monday > datetime.date.today() and w >= 50:
+        jan4_prev = datetime.date(y - 1, 1, 4)
+        start_prev = jan4_prev - datetime.timedelta(days=jan4_prev.weekday())
+        monday = start_prev + datetime.timedelta(weeks=w - 1)
     return monday.isoformat()
 
 

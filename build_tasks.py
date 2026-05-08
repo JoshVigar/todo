@@ -20,7 +20,9 @@ Exit codes:
 import argparse
 import datetime
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import tasklib
@@ -29,7 +31,10 @@ import tasklib
 def load_json(path, default=None):
     try:
         return json.loads(Path(path).read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return default if default is not None else {}
+    except json.JSONDecodeError as e:
+        print(f"WARNING: corrupt JSON in {path}: {e}", file=sys.stderr)
         return default if default is not None else {}
 
 
@@ -129,12 +134,19 @@ def build_task_object(parsed, task_id, num, today_str, existing_lookup, jira_cac
     }
 
 
-def build_completed_entry(parsed, task_id, num):
+def build_completed_entry(parsed, task_id, num, today_str):
     """Convert a parsed done-section task into a completed_today entry."""
     time_str = "—"
     if parsed.get("completed_time"):
         parts = parsed["completed_time"].split()
         time_str = parts[1] if len(parts) >= 2 else parts[0]
+
+    added = today_str
+    if parsed.get("from_week"):
+        try:
+            added = tasklib.week_monday(parsed["from_week"])
+        except (ValueError, OverflowError):
+            pass
 
     return {
         "num": num,
@@ -143,6 +155,11 @@ def build_completed_entry(parsed, task_id, num):
         "links": parsed["links"],
         "time": time_str,
         "status": "done",
+        "pri": parsed.get("pri"),
+        "due": parsed.get("due", "—"),
+        "from": parsed.get("from_week", "—"),
+        "added": added,
+        "why": parsed.get("why", "—"),
     }
 
 
@@ -342,7 +359,7 @@ def main():
         tid = assign_id(parsed, existing_lookup, completed_lookup, id_counter)
         # If existing JSON has this entry (same-day), preserve extra fields
         existing_entry = completed_lookup.get(parsed["task"].lower())
-        entry = build_completed_entry(parsed, tid, num)
+        entry = build_completed_entry(parsed, tid, num, today_str)
         if existing_is_today and existing_entry:
             for key in ("from_section",):
                 if key in existing_entry:
@@ -362,22 +379,29 @@ def main():
     # ── No-silent-delete check for active sections ───────────────────────
     # Check if any same-day active tasks from existing JSON would be dropped
     if existing_is_today:
+        new_active_ids = set()
         new_active_names = set()
         for s in sections:
             for t in s["tasks"]:
+                new_active_ids.add(t.get("id"))
                 new_active_names.add(t["task"].lower())
         for ct in completed_today:
+            new_active_ids.add(ct.get("id"))
             new_active_names.add(ct.get("task", "").lower())
 
         for section in existing_data.get("sections", []):
             for task in section.get("tasks", []):
+                tid = task.get("id")
                 name = task.get("task", "").lower()
-                if name and name not in new_active_names:
+                if name and name not in new_active_names and tid not in new_active_ids:
+                    reason = "not in core file active tasks"
+                    if any(t["task"].lower().startswith(name[:20]) for s in sections for t in s["tasks"]):
+                        reason += " (possibly renamed)"
                     would_drop.append({
-                        "id": task.get("id"),
+                        "id": tid,
                         "task": task.get("task"),
                         "section": section.get("title"),
-                        "reason": "not in core file active tasks",
+                        "reason": reason,
                     })
 
     if would_drop:
@@ -395,9 +419,21 @@ def main():
         "counts": counts,
     }
 
-    Path(args.output).expanduser().write_text(
-        json.dumps(output, indent=2, ensure_ascii=False) + "\n"
+    out_path = Path(args.output).expanduser()
+    content = json.dumps(output, indent=2, ensure_ascii=False) + "\n"
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{out_path.name}-", suffix=".tmp", dir=str(out_path.parent)
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, out_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     sys.exit(0)
 
 

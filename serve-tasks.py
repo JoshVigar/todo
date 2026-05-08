@@ -14,6 +14,8 @@ import time
 import urllib.parse
 from pathlib import Path
 
+import tasklib
+
 _server = None
 
 def _watch_self():
@@ -57,11 +59,16 @@ SLACK_DISMISS_TTL_DAYS = 14
 SLACK_LOG_COMPACT_BYTES = 100_000
 
 
+_LOG_MAX_BYTES = 1_000_000  # ~1MB, then truncate to last half
+
 def _log_request(line):
     """Append one line to the request log; never crash a request on log failure."""
     try:
         with open(REQUEST_LOG, "a") as f:
             f.write(line + "\n")
+        if REQUEST_LOG.stat().st_size > _LOG_MAX_BYTES:
+            data = REQUEST_LOG.read_text()
+            REQUEST_LOG.write_text(data[len(data) // 2:])
     except OSError:
         pass
 
@@ -166,6 +173,30 @@ def _atomic_write_json(path, data):
             pass
         raise
 
+def _atomic_write_text(path, content):
+    """Write text via tempfile + os.replace so a partial write is never observed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_mode = None
+    try:
+        existing_mode = path.stat().st_mode & 0o777
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        if existing_mode is not None:
+            os.chmod(tmp, existing_mode)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
 # Notify SSE clients whenever the rendered state could have changed.
 # `_state_version` increments on every observed mtime change of the JSON,
 # this script, or the current-week core file.
@@ -226,7 +257,7 @@ def _watch_state():
 if not os.environ.get("SERVE_TASKS_NO_WATCH"):
     threading.Thread(target=_watch_state, daemon=True).start()
 
-_TASK_NAME_BOUNDARY = re.compile(r"\s+(?:—|\(|_\()")
+_TASK_NAME_BOUNDARY = tasklib._TASK_NAME_BOUNDARY
 
 def _extract_task_name(line):
     """Pull the task name out of a core-file line like '- [X] 🟠 Task name — due 17:00 (link)'.
@@ -272,14 +303,21 @@ def _insert_under_dated_section(lines, section_title, dated_line, today_str, *, 
                 lines.insert(insert_at + j, item)
         return
 
-    ins = section_idx + 1
-    if ins < len(lines) and lines[ins] == "":
-        ins += 1
-    if ins < len(lines) and lines[ins] == f"### {today_str}":
-        lines.insert(ins + 1, dated_line)
+    # Scan the entire section for today's date heading before creating a new one
+    heading_target = f"### {today_str}"
+    end_idx = next(
+        (i for i in range(section_idx + 1, len(lines)) if lines[i].startswith("## ")),
+        len(lines),
+    )
+    existing_heading = next(
+        (i for i in range(section_idx + 1, end_idx) if lines[i].strip() == heading_target),
+        None,
+    )
+    if existing_heading is not None:
+        lines.insert(existing_heading + 1, dated_line)
     else:
         lines.insert(section_idx + 1, dated_line)
-        lines.insert(section_idx + 1, f"### {today_str}")
+        lines.insert(section_idx + 1, heading_target)
         lines.insert(section_idx + 1, "")
 
 
@@ -1590,6 +1628,10 @@ function _refreshTasks(force) {
     document.querySelectorAll('tr.expanded[draggable="true"]'),
     function(el) { return el.dataset.id; }
   );
+  var slackSectionState = {};
+  document.querySelectorAll('.slack-section[data-tier]').forEach(function(el) {
+    slackSectionState[el.dataset.tier] = el.classList.contains('collapsed');
+  });
   // Preserve the current view by including the search string in the fetch URL
   fetch('/' + window.location.search).then(function(r) {
     if (r.status === 304) return null;
@@ -1621,6 +1663,18 @@ function _refreshTasks(force) {
       expandedTrIds.forEach(function(id) {
         var row = document.querySelector('tr[draggable="true"][data-id="' + id + '"]');
         if (row) row.classList.add('expanded');
+      });
+      Object.keys(slackSectionState).forEach(function(tier) {
+        var sec = document.querySelector('.slack-section[data-tier="' + tier + '"]');
+        if (!sec) return;
+        var btn = sec.querySelector('[data-action="expand-all"]');
+        if (slackSectionState[tier]) {
+          sec.classList.add('collapsed');
+          if (btn) btn.textContent = '▾';
+        } else {
+          sec.classList.remove('collapsed');
+          if (btn) btn.textContent = '▴';
+        }
       });
       // Re-apply keyboard-nav highlight if it survived the swap
       if (_hilitId != null) _setHighlight(_hilitId);
@@ -2025,14 +2079,15 @@ def h(text):
             .replace('"', "&quot;"))
 
 
-def _section_header(label, color, *, expandable=False, subtitle=""):
+def _section_header(label, color, *, expandable=False, subtitle="", collapsed=False):
     """Standard section header bar with the section's accent colour.
     If `expandable=True`, append a chevron toggle that expands/collapses
     every detail panel in the following section. If `subtitle` is set,
     render it next to the label (used for Today's Focus progress)."""
+    chevron = "▾" if collapsed else "▴"
     btn = (
-        '<button class="expand-all-btn" data-action="expand-all" '
-        'title="Expand / collapse all">▾</button>'
+        f'<button class="expand-all-btn" data-action="expand-all" '
+        f'title="Expand / collapse all">{chevron}</button>'
         if expandable else ""
     )
     sub = f'<span class="section-subtitle">· {h(subtitle)}</span>' if subtitle else ""
@@ -2095,7 +2150,7 @@ def format_age(from_week, current_week, added=None):
 def render_links(links):
     if not links:
         return "—"
-    return " · ".join(f'<a href="{l["url"]}">{h(l["label"])}</a>' for l in links)
+    return " · ".join(f'<a href="{h(l["url"])}">{h(l["label"])}</a>' for l in links)
 
 def render_status(status, task_id=None):
     label, cls = STATUS_MAP.get(status, (h(status), "b-open"))
@@ -2208,7 +2263,7 @@ def render_core_section(title, tasks, week, subtitle=""):
     if not subtitle:
         subtitle = f"{len(tasks)}"
     return (
-        _section_header(label, color, expandable=any_why, subtitle=subtitle)
+        _section_header(label, color, expandable=any_why, subtitle=subtitle, collapsed=True)
         + f'<table><thead><tr>{"".join(headers)}</tr></thead><tbody>\n'
         + "\n".join(rows)
         + "\n</tbody></table>\n"
@@ -2257,7 +2312,7 @@ def render_compact_section(title, tasks, week):
             f'<div class="cmp-detail" data-id="{task_id}">{"".join(detail_parts)}</div>'
         )
     return (
-        _section_header(label, color, expandable=True, subtitle=f"{len(tasks)}")
+        _section_header(label, color, expandable=True, subtitle=f"{len(tasks)}", collapsed=True)
         + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 
@@ -2378,12 +2433,15 @@ def render_completed(tasks):
     rows = []
     for t in tasks:
         task_id = t.get("id", t.get("num", ""))
+        why = (t.get("why") or "").strip()
+        why_html = f'<span class="why-text">{h(why)}</span>' if why and why != "—" else ""
         rows.append(
             f'<tr>'
             f'<td class="num num-done" data-id="{task_id}">{task_id}</td>'
             f'<td>{h(t.get("task",""))}</td>'
             f'<td>{render_links(t.get("links",[]))}</td>'
             f'<td>{h(t.get("time") or "—")}</td>'
+            f'<td>{why_html}</td>'
             f'</tr>'
         )
     return (
@@ -2393,6 +2451,7 @@ def render_completed(tasks):
         '<th>Task</th>'
         '<th style="width:9%">Link</th>'
         '<th style="width:5%">Time</th>'
+        '<th>Why</th>'
         '</tr></thead><tbody>\n'
         + "\n".join(rows)
         + "\n</tbody></table>\n"
@@ -2530,7 +2589,7 @@ def render_workdays_sparkline():
     )
 
 
-def render_compact_completed(tasks):
+def render_compact_completed(tasks, week=""):
     """Compact rendering for dashboard view: matches the Monitoring/Lower Priority style.
     The id cell uncompletes (handled by .cmp-id-done in the global click handler).
     Click the task name to expand the detail panel — completion time + link + source."""
@@ -2551,21 +2610,24 @@ def render_compact_completed(tasks):
             f'</div>'
         )
         detail_parts = [
-            f'<span class="field"><span class="field-label">Time</span>{h(time) if time else "—"}</span>',
+            f'<span class="field"><span class="field-label">Completed</span>{h(time) if time else "—"}</span>',
+            f'<span class="field"><span class="field-label">Pri</span>{render_pri(t.get("pri"), task_id)}</span>',
+            f'<span class="field"><span class="field-label">Age</span>{format_age(t.get("from"), week, t.get("added"))}</span>',
         ]
-        if t.get("from_section"):
-            detail_parts.append(
-                f'<span class="field"><span class="field-label">From</span>{h(t["from_section"])}</span>'
-            )
         if t.get("links"):
             detail_parts.append(
                 f'<span class="field"><span class="field-label">Links</span>{render_links(t.get("links"))}</span>'
+            )
+        why = (t.get("why") or "").strip()
+        if why and why != "—":
+            detail_parts.append(
+                f'<span class="field"><span class="field-label">Why</span><span class="why-text">{h(why)}</span></span>'
             )
         rows.append(
             f'<div class="cmp-detail" data-id="{task_id}">{"".join(detail_parts)}</div>'
         )
     return (
-        _section_header("Completed today", color, expandable=True, subtitle=f"{len(tasks)}")
+        _section_header("Completed today", color, expandable=True, subtitle=f"{len(tasks)}", collapsed=True)
         + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 
@@ -2610,7 +2672,7 @@ def _build_dashboard_body(data, week):
     right_html += card(render_workdays_sparkline())
 
     # Completed today is anchored to the bottom of the right column
-    completed_html = render_compact_completed(data.get("completed_today", []))
+    completed_html = render_compact_completed(data.get("completed_today", []), week)
     if completed_html:
         right_html += f'<div class="completed-anchor">{card(completed_html)}</div>'
 
@@ -2667,7 +2729,7 @@ def _slack_relative_time(iso_str, now=None):
         ts = datetime.datetime.fromisoformat(iso_str)
     except (TypeError, ValueError):
         return h(iso_str)
-    now = now or datetime.datetime.now(ts.tzinfo) if ts.tzinfo else datetime.datetime.now()
+    now = now or (datetime.datetime.now(ts.tzinfo) if ts.tzinfo else datetime.datetime.now())
     delta = now - ts
     secs = int(delta.total_seconds())
     if secs < 60: return "just now"
@@ -2744,7 +2806,7 @@ def _render_slack_section(label, items, *, color, collapsed=False):
     cls = "slack-section" + (" collapsed" if collapsed else "")
     return (
         f'<div class="task-card {cls}" data-tier="{h(label)}">'
-        f'{_section_header(label, color, expandable=True, subtitle=str(len(items)))}'
+        f'{_section_header(label, color, expandable=True, subtitle=str(len(items)), collapsed=collapsed)}'
         f'<div class="slack-section-body">{body}</div>'
         f'</div>'
     )
@@ -3079,7 +3141,7 @@ def set_today_focus(task_names):
         )
         new_lines = lines[:cf_start] + new_block + lines[cf_end:]
 
-    journal_path.write_text("\n".join(new_lines))
+    _atomic_write_text(journal_path, "\n".join(new_lines))
 
 def update_core_file(task_name, new_status, now, week=None):
     """Update the task's state marker in the core markdown file."""
@@ -3110,7 +3172,7 @@ def update_core_file(task_name, new_status, now, week=None):
         marker = STATE_MARKER.get(new_status, "[ ]")
         lines[task_idx] = re.sub(r"\[.\]", marker, original, count=1)
 
-    core_path.write_text("\n".join(lines))
+    _atomic_write_text(core_path, "\n".join(lines))
 
 def update_core_file_priority(task_name, new_pri, now, week=None):
     """Swap the priority emoji on the task line in the core markdown file."""
@@ -3139,7 +3201,7 @@ def update_core_file_priority(task_name, new_pri, now, week=None):
                 if e in line:
                     lines[i] = line.replace(e + " ", "", 1)
                     break
-    core_path.write_text("\n".join(lines))
+    _atomic_write_text(core_path, "\n".join(lines))
 
 
 def apply_priority_update(task_id):
@@ -3222,7 +3284,8 @@ def sync_core_file_order(data):
 
     def find_and_claim(name, remaining):
         for i, l in enumerate(remaining):
-            if name in l.lower():
+            extracted = _extract_task_name(l)
+            if extracted and extracted.lower() == name:
                 return remaining.pop(i)
         return None
 
@@ -3239,7 +3302,7 @@ def sync_core_file_order(data):
     for line in lines[:done_idx]:
         new_lines.append(next(task_iter) if line.strip().startswith("- [") else line)
     new_lines.extend(lines[done_idx:])
-    core_path.write_text("\n".join(new_lines))
+    _atomic_write_text(core_path, "\n".join(new_lines))
 
 
 def apply_sort():
@@ -3274,6 +3337,10 @@ def apply_sort():
 
 def apply_uncomplete(num):
     """Move a completed task back to active. Reads priority from core file to pick section."""
+    try:
+        num = int(num)
+    except (TypeError, ValueError):
+        return False
     data = _load_state()
     if data is None:
         return False
@@ -3318,7 +3385,7 @@ def apply_uncomplete(num):
             # Insert restored line at top of active area (before ## Done)
             done_section = _done_boundary(lines, len(lines))
             lines.insert(done_section, restored)
-            core_path.write_text("\n".join(lines))
+            _atomic_write_text(core_path, "\n".join(lines))
 
     # Remove from completed_today (by stable id, not num)
     data["completed_today"] = [t for t in data["completed_today"] if t.get("id") != num]
@@ -3327,15 +3394,16 @@ def apply_uncomplete(num):
     new_task = {
         "id": num,
         "num": num,
-        "pri": pri,
+        "pri": pri or task.get("pri"),
         "task": task_name,
-        "due": "—",
-        "from": "—",
+        "due": task.get("due", "—"),
+        "from": task.get("from", "—"),
+        "added": task.get("added"),
         "links": task.get("links", []),
         "status": "open",
-        "why": "—",
+        "why": task.get("why", "—"),
     }
-    target_title = target_section_for_pri(pri)
+    target_title = target_section_for_pri(new_task["pri"])
     target = next((s for s in data.get("sections", []) if s.get("title") == target_title), None)
     if target is None:
         target = next((s for s in data.get("sections", []) if s.get("type", "core") == "core"), None)
@@ -3377,6 +3445,11 @@ def apply_status_change(num, force_status=None):
             "links": task.get("links", []),
             "time": now.strftime("%H:%M"),
             "from_section": source_section.get("title", ""),
+            "pri": task.get("pri"),
+            "due": task.get("due", "—"),
+            "from": task.get("from", "—"),
+            "added": task.get("added"),
+            "why": task.get("why", "—"),
         }
         data.setdefault("completed_today", []).append(completed_entry)
         result = completed_entry
@@ -3448,7 +3521,7 @@ def apply_cancel(task_id):
             lines.pop(task_idx)
             _insert_under_dated_section(lines, "Cancelled", updated, today_str, anchor_after="Done")
 
-        core_path.write_text("\n".join(lines))
+        _atomic_write_text(core_path, "\n".join(lines))
 
     _snapshot_focus_if_touched(data, src_title)
 
@@ -3503,7 +3576,7 @@ def update_core_file_name(old_name, new_name, week=None, pri=None):
     cut = _TASK_NAME_BOUNDARY.search(rest)
     suffix = rest[cut.start():] if cut else ""
     lines[i] = m.group(1) + emoji_prefix + new_name + suffix
-    core_path.write_text("\n".join(lines))
+    _atomic_write_text(core_path, "\n".join(lines))
 
 
 # Reject names containing newlines, tabs, or markdown-marker glyphs that
@@ -3571,7 +3644,7 @@ def update_core_file_task(old_name, old_pri, new_name, new_pri,
         body += f" _(why: {new_why})_"
 
     lines[i] = state_prefix + body
-    core_path.write_text("\n".join(lines))
+    _atomic_write_text(core_path, "\n".join(lines))
 
 
 def apply_edit(task_id, fields):
@@ -3730,7 +3803,7 @@ def apply_uncancel(task_id):
                 lines.insert(done_section, restored)
                 wrote = True
         if wrote:
-            core_path.write_text("\n".join(lines))
+            _atomic_write_text(core_path, "\n".join(lines))
 
     _snapshot_focus_if_touched(data, rec["src_title"])
     renumber_tasks(data)
@@ -3742,7 +3815,10 @@ def _load_state():
     """Read tasks-live.json. Returns the dict, or None if unreadable."""
     try:
         return json.loads(JSON_FILE.read_text())
-    except Exception:
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    except Exception as e:
+        _log_request(f"ERROR  _load_state: {type(e).__name__}: {e}")
         return None
 
 
@@ -3876,7 +3952,7 @@ def add_to_core_file(name, pri, due, why, links, week=None):
         task_line += f" _(why: {why})_"
     done_section = _done_boundary(lines, len(lines))
     lines.insert(done_section, task_line)
-    core_path.write_text("\n".join(lines))
+    _atomic_write_text(core_path, "\n".join(lines))
 
 
 def add_completed_to_core_file(name, pri, completed_time, links, week=None):
@@ -3895,7 +3971,7 @@ def add_completed_to_core_file(name, pri, completed_time, links, week=None):
         task_line += f" ({link_strs})"
     task_line += f" _(completed: {ts})_"
     _insert_under_dated_section(lines, "Done", task_line, today_str)
-    core_path.write_text("\n".join(lines))
+    _atomic_write_text(core_path, "\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -4088,9 +4164,13 @@ def apply_add(task_data):
     if _RENAME_FORBIDDEN.search(name):
         return False
     pri = task_data.get("pri") or "P2"
+    if pri not in PRI_EMOJI:
+        return False
     due = task_data.get("due") or "\u2014"
+    if due != "\u2014" and not re.match(r'^(\d{4}-\d{2}-\d{2}|([01]\d|2[0-3]):[0-5]\d|today)$', due):
+        return False
     why = task_data.get("why") or "\u2014"
-    if why not in ("\u2014", "\u2014") and _RENAME_FORBIDDEN.search(why):
+    if why != "\u2014" and _RENAME_FORBIDDEN.search(why):
         return False
     link_label = (task_data.get("link_label") or "").strip()
     link_url = (task_data.get("link_url") or "").strip()
@@ -4117,6 +4197,11 @@ def apply_add(task_data):
             "time": completed_at,
             "status": "done",
             "from_section": target_title,
+            "pri": pri,
+            "due": due,
+            "from": "—",
+            "added": now.strftime("%Y-%m-%d"),
+            "why": why,
         }
         data.setdefault("completed_today", []).append(completed_entry)
         renumber_tasks(data)
@@ -4156,7 +4241,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/open"):
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             url = params.get("url", [""])[0]
-            if url:
+            if url and url.startswith(("https://", "http://")):
                 subprocess.run(["open", url])
             self.send_response(204)
             self.end_headers()
@@ -4231,7 +4316,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data = json.loads(JSON_FILE.read_text())
             page = build_page(data, view=view)
         except Exception as e:
-            page = f"<pre style='color:#f85149;padding:16px'>Error: {e}</pre>"
+            page = f"<pre style='color:#f85149;padding:16px'>Error: {h(str(e))}</pre>"
 
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
@@ -4275,7 +4360,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             _log_request(f"{ts}  POST {self.path:25s}  ms=0    status=404")
             return
         length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length)) if length else {}
+        if length > 65536:
+            self.send_response(413)
+            self.end_headers()
+            return
+        origin = self.headers.get("Origin", "")
+        if origin and origin != f"http://localhost:{PORT}":
+            self.send_response(403)
+            self.end_headers()
+            return
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except (json.JSONDecodeError, ValueError):
+            self.send_response(400)
+            self.end_headers()
+            return
         with _state_lock:
             result = handler(body)
         if isinstance(result, dict):
