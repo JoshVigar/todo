@@ -285,10 +285,30 @@ def main():
             prev_focus_names = cand_focus
             break
     today_focus_lower = {n.lower() for n in focus_names}
-    for pfn in prev_focus_names:
-        if pfn.lower() not in today_focus_lower:
+
+    # When today has an explicit Core Focus the section is authoritative — no carry-forward.
+    # When today has no explicit section, carry forward uncompleted previous-day focus tasks,
+    # but skip any task the user has manually placed outside Focus in the current JSON.
+    # Day rollover (existing_is_today=False) resets placement memory — carry-forward runs freely.
+    if not today_had_explicit_focus:
+        # Exact/prefix match only — substring fuzzy matching risks false positives on
+        # similarly-named tasks (e.g. "Update ELM tracking doc" vs "Update ELM migration thread").
+        existing_non_focus_names: set[str] = set()
+        if existing_is_today:
+            for _sec in existing_data.get("sections", []):
+                if _sec.get("title") != tasklib.SEC_FOCUS:
+                    for _t in _sec.get("tasks", []):
+                        existing_non_focus_names.add(_t.get("task", "").lower())
+
+        for pfn in prev_focus_names:
+            pfn_lower = pfn.lower()
+            if pfn_lower in today_focus_lower:
+                continue
+            # Don't carry to Focus if user placed this task elsewhere (exact or prefix match)
+            if any(n == pfn_lower or n.startswith(pfn_lower) for n in existing_non_focus_names):
+                continue
             focus_names.append(pfn)
-            today_focus_lower.add(pfn.lower())
+            today_focus_lower.add(pfn_lower)
 
     focus_tasks = []
     monitoring_tasks = []
