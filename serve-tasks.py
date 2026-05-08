@@ -28,14 +28,18 @@ def _watch_self():
         except OSError:
             continue
         if new_mtime != mtime:
-            print("serve-tasks.py changed — reloading...")
-            # Close the listening socket so the new process can rebind cleanly.
-            # Threads handling in-flight requests get killed by execv (acceptable for a dev tool).
+            sys.stderr.write("serve-tasks.py changed — reloading...\n")
             if _server is not None:
                 try:
                     _server.socket.close()
                 except Exception:
                     pass
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                sys.stdout = sys.stderr = open(os.devnull, "w")
+            except Exception:
+                pass
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
 if not os.environ.get("SERVE_TASKS_NO_WATCH"):
@@ -4443,7 +4447,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"Tasks at http://localhost:{PORT}")
+    import signal
+    sys.stderr.write(f"Tasks at http://localhost:{PORT}\n")
     _server = http.server.ThreadingHTTPServer(("", PORT), Handler)
     _server.socket.set_inheritable(False)
+
+    def _shutdown(signum, frame):
+        threading.Thread(target=_server.shutdown).start()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
     _server.serve_forever()
