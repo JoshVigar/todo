@@ -2842,7 +2842,7 @@ def _build_goalie_body(data, week):
     goalie_sections = [s for s in data.get("sections", []) if s.get("type") == "goalie"]
     if goalie_sections:
         for section in goalie_sections:
-            parts.append(card(render_goalie_section(section["title"], section.get("tasks", []))))
+            parts.append(card(render_goalie_section(section.get("title", ""), section.get("tasks", []))))
     else:
         parts.append(
             '<div class="task-card">'
@@ -2850,6 +2850,8 @@ def _build_goalie_body(data, week):
             '<em>Not on goalie rotation this week.</em></p>'
             '</div>'
         )
+
+    # completed_today intentionally omitted — goalie view is focused on active rotation work
 
     if data.get("updated"):
         parts.append(
