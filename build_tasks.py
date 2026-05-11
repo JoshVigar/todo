@@ -368,6 +368,29 @@ def main():
     make_section(tasklib.SEC_HIGH, high_tasks)
     make_section(tasklib.SEC_LOW, low_tasks)
 
+    # ── Build goalie sections (when on rotation) ────────────────────────────
+    goalie_cache = load_json(args.goalie_cache, {})
+    if goalie_cache.get("on_goalie"):
+        goalie_raw = tasklib.parse_goalie_sections(journal_lines, weekday_header)
+        for subsection in ("Start here", "Then", "Handover"):
+            parsed_list = goalie_raw.get(subsection, [])
+            open_tasks = [
+                p for p in parsed_list
+                if p.get("marker") not in ("[x]", "[/]")
+                and p.get("status_override") not in ("done", "cancelled")
+            ]
+            if not open_tasks:
+                continue
+            tasks = []
+            for p in open_tasks:
+                tid = assign_id(p, existing_lookup, completed_lookup, id_counter)
+                obj = build_task_object(
+                    p, tid, num, today_str, existing_lookup, jira_cache, slack_cache
+                )
+                tasks.append(obj)
+                num += 1
+            sections.append({"type": "goalie", "title": subsection, "tasks": tasks})
+
     # ── Build completed_today ────────────────────────────────────────────
     completed_today = []
 
@@ -410,6 +433,8 @@ def main():
             new_active_names.add(ct.get("task", "").lower())
 
         for section in existing_data.get("sections", []):
+            if section.get("type") == "goalie":
+                continue  # goalie sections are rebuilt from journal; not browser-writable
             for task in section.get("tasks", []):
                 tid = task.get("id")
                 name = task.get("task", "").lower()

@@ -374,7 +374,7 @@ class TestMergeRules(unittest.TestCase):
 
 class TestCLI(unittest.TestCase):
 
-    def _run(self, core_text, journal_text="", existing=None, jira=None, slack=None):
+    def _run(self, core_text, journal_text="", existing=None, jira=None, slack=None, on_goalie=False):
         """Run build_tasks.py with temp files and return (exit_code, output_data_or_stdout)."""
         import tempfile, os
         tmpdir = tempfile.mkdtemp()
@@ -391,7 +391,7 @@ class TestCLI(unittest.TestCase):
         existing_p.write_text(json.dumps(existing or {}))
         jira_p.write_text(json.dumps(jira or {}))
         slack_p.write_text(json.dumps(slack or {}))
-        goalie_p.write_text(json.dumps({"on_goalie": False}))
+        goalie_p.write_text(json.dumps({"on_goalie": on_goalie}))
 
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parent / "build_tasks.py"),
@@ -555,6 +555,68 @@ class TestCLI(unittest.TestCase):
         code, data = self._run(core)
         self.assertEqual(code, 0)
         self.assertIn("2 core tasks completed", data["counts"])
+
+
+class TestGoalieSections(TestCLI):
+
+    def _journal_with_goalie(self, start_here=None, then=None, handover=None):
+        today = datetime.date.today()
+        lines = [
+            f"## {today.strftime('%A')} {today.isoformat()}",
+            "",
+            "### Plan",
+            "",
+            "#### Goalie",
+            "",
+        ]
+        for title, tasks in (("Start here", start_here), ("Then", then), ("Handover", handover)):
+            if tasks is not None:
+                lines += [f"##### {title}", ""]
+                lines += [f"- [ ] {t}" for t in tasks]
+                lines += [""]
+        lines += ["### Done"]
+        return "\n".join(lines)
+
+    def test_goalie_sections_emitted_when_on_rotation(self):
+        journal = self._journal_with_goalie(
+            start_here=["[VCSUP-1234](https://example.com) — Fix the thing"],
+            then=["Check handover items"],
+        )
+        core = "- [ ] 🟠 Core task\n\n## Done\n"
+        code, data = self._run(core, journal, on_goalie=True)
+        self.assertEqual(code, 0)
+        goalie = [s for s in data["sections"] if s.get("type") == "goalie"]
+        self.assertEqual(len(goalie), 2)
+        titles = [s["title"] for s in goalie]
+        self.assertIn("Start here", titles)
+        self.assertIn("Then", titles)
+        self.assertNotIn("Handover", titles)  # empty subsection omitted
+
+    def test_goalie_sections_absent_when_off_rotation(self):
+        journal = self._journal_with_goalie(start_here=["Some goalie task"])
+        core = "- [ ] 🟠 Core task\n\n## Done\n"
+        code, data = self._run(core, journal, on_goalie=False)
+        self.assertEqual(code, 0)
+        goalie = [s for s in data["sections"] if s.get("type") == "goalie"]
+        self.assertEqual(len(goalie), 0)
+
+    def test_goalie_task_id_stability(self):
+        journal = self._journal_with_goalie(start_here=["Existing goalie task"])
+        core = "- [ ] 🟠 Core task\n\n## Done\n"
+        existing = {
+            "updated": "2026-01-01 00:00",
+            "sections": [
+                {"type": "goalie", "title": "Start here", "tasks": [
+                    {"id": 77, "task": "Existing goalie task", "status": "open"}
+                ]}
+            ],
+            "completed_today": [],
+        }
+        code, data = self._run(core, journal, existing=existing, on_goalie=True)
+        self.assertEqual(code, 0)
+        goalie = [s for s in data["sections"] if s.get("type") == "goalie"]
+        self.assertEqual(len(goalie), 1)
+        self.assertEqual(goalie[0]["tasks"][0]["id"], 77)
 
 
 if __name__ == "__main__":
