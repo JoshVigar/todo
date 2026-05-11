@@ -425,6 +425,8 @@ def main():
         new_active_ids = set()
         new_active_names = set()
         for s in sections:
+            if s.get("type") == "goalie":
+                continue
             for t in s["tasks"]:
                 new_active_ids.add(t.get("id"))
                 new_active_names.add(t["task"].lower())
