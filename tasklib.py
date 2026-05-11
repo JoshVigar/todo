@@ -300,9 +300,6 @@ def parse_goalie_sections(journal_lines, weekday_header):
             sections[current_sub] = []
             continue
         if current_sub:
-            if stripped.startswith("###") and not stripped.startswith("#####"):
-                current_sub = None
-                continue
             parsed = parse_task_line(line)
             if parsed:
                 sections[current_sub].append(parsed)

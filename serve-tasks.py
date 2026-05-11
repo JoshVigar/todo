@@ -3994,8 +3994,8 @@ def apply_reorder(from_num, to_num, before=True):
     if not src_task or not tgt_task or src_section is None or tgt_section is None:
         return False
 
-    if (src_section.get("type") == "goalie") != (tgt_section.get("type") == "goalie"):
-        return src_task  # prevent cross-type section drags
+    if src_section.get("type") == "goalie" or tgt_section.get("type") == "goalie":
+        return src_task  # prevent all drags involving goalie sections (order never persists)
 
     tgt_idx = next((i for i, t in enumerate(tgt_section["tasks"]) if t.get("id") == to_num), None)
     if tgt_idx is None:
