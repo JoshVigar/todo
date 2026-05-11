@@ -2415,7 +2415,7 @@ def render_goalie_section(title, tasks):
         rows.append(
             f'<tr{rc}{drag_attrs}{filter_attrs}>'
             f'<td class="num" data-id="{task_id}">{task_id}</td>'
-            f'<td>{h(t.get("task",""))}</td>'
+            f'<td>{h(t.get("task",""))}</td>'  # no rename pencil — goalie tasks are journal-sourced
             f'<td>{render_links(t.get("links",[]))}</td>'
             f'<td>{render_status(t.get("status","open"), task_id)}</td>'
             f'</tr>'
