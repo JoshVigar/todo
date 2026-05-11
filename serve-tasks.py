@@ -2637,7 +2637,7 @@ def render_compact_completed(tasks, week=""):
         + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 
-VIEWS = ["dashboard", "classic", "slack"]
+VIEWS = ["dashboard", "classic", "goalie", "slack"]
 
 def _build_dashboard_body(data, week):
     parts = []  # counts strip now lives in the topbar (see _view_switcher_html)
@@ -2818,6 +2818,47 @@ def _render_slack_section(label, items, *, color, collapsed=False):
     )
 
 
+def _build_goalie_body(data, week):
+    """Goalie view: Today's Focus + goalie subsections (Start here / Then / Handover).
+    Shows an off-rotation message when no goalie sections are present."""
+    parts = []
+
+    def card(html, variant=""):
+        if not html:
+            return ""
+        cls = "task-card" + (f" {variant}" if variant else "")
+        return f'<div class="{cls}">{html}</div>'
+
+    focus = next(
+        (s for s in data.get("sections", []) if s.get("title") == SEC_FOCUS), None
+    )
+    if focus:
+        focus_sub = _focus_progress(data)
+        parts.append(card(
+            render_core_section(SEC_FOCUS, focus.get("tasks", []), week, subtitle=focus_sub),
+            variant="focus",
+        ))
+
+    goalie_sections = [s for s in data.get("sections", []) if s.get("type") == "goalie"]
+    if goalie_sections:
+        for section in goalie_sections:
+            parts.append(card(render_goalie_section(section["title"], section.get("tasks", []))))
+    else:
+        parts.append(
+            '<div class="task-card">'
+            '<p style="color:#484f58;padding:12px 0;margin:0">'
+            '<em>Not on goalie rotation this week.</em></p>'
+            '</div>'
+        )
+
+    if data.get("updated"):
+        parts.append(
+            f'<p class="counts" style="margin-top:16px;color:#484f58">'
+            f'Updated {h(data["updated"])}</p>\n'
+        )
+    return "".join(parts)
+
+
 def _build_slack_body(data, week):
     parts = []
 
@@ -2984,6 +3025,8 @@ def build_page(data, view="dashboard"):
         body = _build_slack_body(data, week)
     elif view == "classic":
         body = _build_classic_body(data, week)
+    elif view == "goalie":
+        body = _build_goalie_body(data, week)
     else:
         body = _build_dashboard_body(data, week)
     switcher = _view_switcher_html(view, week, pills_html=render_counts_strip(data))

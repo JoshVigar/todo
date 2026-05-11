@@ -2301,3 +2301,85 @@ class TestRenderGoalieSection:
         tasks = [{"id": 1, "num": 1, "task": "A task", "links": [], "status": "open"}]
         html = st.render_goalie_section("Start here", tasks)
         assert "#bc8cff" in html
+
+
+# ---------------------------------------------------------------------------
+# Goalie view
+# ---------------------------------------------------------------------------
+
+def _goalie_fixture():
+    """Data with Today's Focus + one goalie section."""
+    return {
+        "updated": "2026-05-11 09:00",
+        "week": "W20",
+        "sections": [
+            {
+                "title": "Today's Focus",
+                "tasks": [
+                    {"id": 1, "num": 1, "pri": "P2", "task": "Focus task",
+                     "due": "—", "from": "W20", "added": "2026-05-11",
+                     "links": [], "status": "open", "why": "—"},
+                ],
+            },
+            {
+                "type": "goalie",
+                "title": "Start here",
+                "tasks": [
+                    {"id": 100, "num": 10, "task": "VCSUP goalie task",
+                     "links": [{"label": "VCSUP-1", "url": "https://example.com"}],
+                     "status": "waiting_support"},
+                ],
+            },
+        ],
+        "completed_today": [],
+        "counts": "✅ 0 core tasks completed this week",
+    }
+
+
+class TestGoalieView:
+
+    def test_goalie_in_views(self):
+        assert "goalie" in st.VIEWS
+
+    def test_goalie_view_renders_focus(self):
+        html = st.build_page(_goalie_fixture(), view="goalie")
+        assert "Focus task" in html
+        assert "Today&#x27;s Focus" in html or "Today's Focus" in html
+
+    def test_goalie_view_renders_goalie_section(self):
+        html = st.build_page(_goalie_fixture(), view="goalie")
+        assert "VCSUP goalie task" in html
+        assert "Start here" in html
+
+    def test_goalie_view_off_rotation_message(self):
+        data = {
+            "updated": "2026-05-11 09:00",
+            "week": "W20",
+            "sections": [
+                {
+                    "title": "Today's Focus",
+                    "tasks": [
+                        {"id": 1, "num": 1, "pri": "P2", "task": "Focus task",
+                         "due": "—", "from": "W20", "added": "2026-05-11",
+                         "links": [], "status": "open", "why": "—"},
+                    ],
+                },
+            ],
+            "completed_today": [],
+            "counts": "✅ 0 core tasks completed this week",
+        }
+        html = st.build_page(data, view="goalie")
+        assert "Not on goalie rotation this week" in html
+
+    def test_goalie_view_does_not_show_high_priority_section(self):
+        data = _goalie_fixture()
+        data["sections"].append({
+            "title": "High Priority",
+            "tasks": [
+                {"id": 200, "num": 2, "pri": "P1", "task": "Core high task",
+                 "due": "—", "from": "W20", "added": "2026-05-11",
+                 "links": [], "status": "open", "why": "—"},
+            ],
+        })
+        html = st.build_page(data, view="goalie")
+        assert "Core high task" not in html
