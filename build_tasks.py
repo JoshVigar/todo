@@ -378,6 +378,7 @@ def main():
                 p for p in parsed_list
                 if p.get("marker") not in ("[x]", "[/]")
                 and p.get("status_override") not in ("done", "cancelled")
+                and p["task"].lower() not in completion_wins
             ]
             if not open_tasks:
                 continue

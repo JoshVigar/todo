@@ -3328,6 +3328,7 @@ def sync_core_file_order(data):
     ordered_names = [
         t.get("task", "").lower()
         for s in data.get("sections", [])
+        if s.get("type") != "goalie"
         for t in s.get("tasks", [])
     ]
 
@@ -3922,6 +3923,9 @@ def apply_move_section(task_id, target_title):
     src_task, src_section = find_task_by_id(data, task_id)
     if not src_task or src_section is None:
         return False
+
+    if src_section.get("type") == "goalie":
+        return src_task  # goalie tasks are journal-sourced; section moves not supported
 
     tgt_section = next((s for s in data.get("sections", []) if s.get("title") == target_title), None)
     if tgt_section is None:
