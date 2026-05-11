@@ -1702,7 +1702,7 @@ function _connectSSE() {
   try {
     if (_es) _es.close();
     _es = new EventSource('/events');
-    _es.onmessage = function() { _refreshTasks(); };
+    _es.onmessage = function() { _refreshTasks(true); };
     // EventSource auto-reconnects on error; nothing to do.
   } catch (e) {}
 }
@@ -3411,6 +3411,17 @@ def apply_uncomplete(num):
     if not task:
         return False
 
+    if task.get("source_type") == "goalie":
+        # Goalie task: just remove from completed_today and return.
+        # It will be re-sourced from the journal on the next tk rebuild
+        # if the journal line is still [ ].
+        data["completed_today"] = [
+            e for e in data.get("completed_today", [])
+            if e.get("id") != num
+        ]
+        _save_state(data)
+        return task
+
     task_name = task.get("task", "")
 
     # Read core file to get priority and reconstruct the active line
@@ -3510,6 +3521,8 @@ def apply_status_change(num, force_status=None):
             "added": task.get("added"),
             "why": task.get("why", "—"),
         }
+        if source_section.get("type") == "goalie":
+            completed_entry["source_type"] = "goalie"
         data.setdefault("completed_today", []).append(completed_entry)
         result = completed_entry
     else:
