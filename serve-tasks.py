@@ -3727,6 +3727,9 @@ def apply_edit(task_id, fields):
         _log_request(f"WARN apply_edit({task_id!r}) rejected: task not found")
         return False
 
+    if source and source.get("type") == "goalie":
+        return task  # goalie tasks are journal-sourced; edit not supported
+
     new_name = (fields.get("task") or "").strip()
     if not new_name:
         _log_request(f"WARN apply_edit({task_id}) rejected: empty task name")
@@ -3856,6 +3859,9 @@ def apply_uncancel(task_id):
         )
         wrote = False
         if cancel_idx is not None:
+            # NOTE: for goalie tasks, no [/] line was written to the core file
+            # (apply_cancel guard), so find_task_line returns None here and the
+            # write is skipped. JSON restore still works.
             rel = find_task_line(lines[cancel_idx:], task_name, marker="[/]")
             if rel is not None:
                 idx = cancel_idx + rel
@@ -3993,7 +3999,8 @@ def apply_reorder(from_num, to_num, before=True):
     src_title = src_section.get("title")
     tgt_title = tgt_section.get("title")
     if src_section is not tgt_section:
-        _apply_cross_section_effects(src_task, src_title, tgt_title, now, week=data.get("week"))
+        if src_section.get("type") != "goalie" and tgt_section.get("type") != "goalie":
+            _apply_cross_section_effects(src_task, src_title, tgt_title, now, week=data.get("week"))
 
     insert_pos = tgt_idx if before else tgt_idx + 1
     tgt_section["tasks"].insert(insert_pos, src_task)
