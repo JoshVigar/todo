@@ -2275,3 +2275,29 @@ def test_apply_add_accepts_valid_completed_at(isolated_state):
     result2 = st.apply_add({"task": "Late task", "completed_at": "23:59"})
     assert isinstance(result2, dict)
     assert result2["time"] == "23:59"
+
+
+class TestRenderGoalieSection:
+
+    def test_goalie_row_has_draggable_and_data_id(self):
+        tasks = [
+            {"id": 42, "num": 1, "task": "Fix the thing",
+             "links": [{"label": "VCSUP-1", "url": "https://example.com"}],
+             "status": "waiting_support"},
+        ]
+        html = st.render_goalie_section("Start here", tasks)
+        assert 'draggable="true"' in html
+        assert 'data-id="42"' in html
+
+    def test_goalie_num_cell_has_num_class(self):
+        tasks = [{"id": 7, "num": 1, "task": "A task", "links": [], "status": "open"}]
+        html = st.render_goalie_section("Then", tasks)
+        assert 'class="num"' in html
+
+    def test_goalie_empty_returns_empty_string(self):
+        assert st.render_goalie_section("Start here", []) == ""
+
+    def test_goalie_section_uses_goalie_color(self):
+        tasks = [{"id": 1, "num": 1, "task": "A task", "links": [], "status": "open"}]
+        html = st.render_goalie_section("Start here", tasks)
+        assert "#bc8cff" in html

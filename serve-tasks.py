@@ -2405,14 +2405,16 @@ def render_counts_strip(data):
 def render_goalie_section(title, tasks):
     if not tasks:
         return ""
-    color = section_color(title)
+    color = SECTION_COLORS["goalie"]
     rows = []
     for t in tasks:
         rc = row_classes(t)
         task_id = t.get("id", t.get("num", ""))
+        drag_attrs = f' draggable="true" data-id="{task_id}"'
+        filter_attrs = _filter_data_attrs(t)
         rows.append(
-            f'<tr{rc}>'
-            f'<td>{task_id}</td>'
+            f'<tr{rc}{drag_attrs}{filter_attrs}>'
+            f'<td class="num" data-id="{task_id}">{task_id}</td>'
             f'<td>{h(t.get("task",""))}</td>'
             f'<td>{render_links(t.get("links",[]))}</td>'
             f'<td>{render_status(t.get("status","open"), task_id)}</td>'
