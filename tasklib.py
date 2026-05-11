@@ -278,6 +278,7 @@ def parse_goalie_sections(journal_lines, weekday_header):
     Each value is a list of parsed task dicts.
     """
     in_today = False
+    in_goalie = False
     current_sub = None
     sections = {}
     for line in journal_lines:
@@ -287,7 +288,14 @@ def parse_goalie_sections(journal_lines, weekday_header):
             continue
         if in_today and stripped.startswith("## "):
             break
-        if in_today and stripped.startswith("##### "):
+        if in_today and stripped == "#### Goalie":
+            in_goalie = True
+            continue
+        if in_goalie and stripped.startswith("#### "):
+            break  # exited goalie block into a sibling #### section
+        if not in_goalie:
+            continue
+        if stripped.startswith("##### "):
             current_sub = stripped[6:].strip()
             sections[current_sub] = []
             continue

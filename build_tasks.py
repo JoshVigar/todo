@@ -378,7 +378,7 @@ def main():
                 p for p in parsed_list
                 if p.get("marker") not in ("[x]", "[/]")
                 and p.get("status_override") not in ("done", "cancelled")
-                and p["task"].lower() not in completion_wins
+                and p["task"].lower() not in completion_wins  # same-day browser completions; name collision with core tasks is theoretical
             ]
             if not open_tasks:
                 continue
@@ -462,6 +462,7 @@ def main():
     output = {
         "updated": now_str,
         "week": week_label,
+        "on_goalie": goalie_cache.get("on_goalie", False),
         "sections": sections,
         "completed_today": completed_today,
         "counts": counts,

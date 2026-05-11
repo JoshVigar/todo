@@ -2843,6 +2843,13 @@ def _build_goalie_body(data, week):
     if goalie_sections:
         for section in goalie_sections:
             parts.append(card(render_goalie_section(section.get("title", ""), section.get("tasks", []))))
+    elif data.get("on_goalie"):
+        parts.append(
+            '<div class="task-card">'
+            '<p style="color:#484f58;padding:12px 0;margin:0">'
+            '<em>All goalie tasks done for today.</em></p>'
+            '</div>'
+        )
     else:
         parts.append(
             '<div class="task-card">'
@@ -3510,7 +3517,8 @@ def apply_status_change(num, force_status=None):
         result = task
 
     _save_state(data, now)
-    update_core_file(task_name, new_status, now, week=data.get("week"))
+    if source_section.get("type") != "goalie":
+        update_core_file(task_name, new_status, now, week=data.get("week"))
     return result
 
 # In-memory undo buffer for cancelled tasks. Keyed by task id; entries
@@ -3557,23 +3565,27 @@ def apply_cancel(task_id):
     source_section["tasks"] = [t for t in source_section["tasks"] if t.get("id") != task_id]
 
     # Update core file: change marker to [/], append _(cancelled: ts)_, move to ## Cancelled
-    core_path = current_core_path(data.get("week"))
-    try:
-        lines = core_path.read_text().split("\n")
-    except FileNotFoundError:
-        lines = None
-    if lines is not None:
-        done_section = _done_boundary(lines, len(lines))
-        task_idx = find_task_line(lines, task_name, end_idx=done_section)
-        if task_idx is not None:
-            original = lines[task_idx]
-            updated = re.sub(r"\[.\]", "[/]", original, count=1).rstrip()
-            if "_(cancelled:" not in updated:
-                updated += f" _(cancelled: {ts})_"
-            lines.pop(task_idx)
-            _insert_under_dated_section(lines, "Cancelled", updated, today_str, anchor_after="Done")
+    # Goalie tasks are journal-sourced; skip core-file surgery for them.
+    if source_section.get("type") != "goalie":
+        core_path = current_core_path(data.get("week"))
+        try:
+            lines = core_path.read_text().split("\n")
+        except FileNotFoundError:
+            lines = None
+        if lines is not None:
+            done_section = _done_boundary(lines, len(lines))
+            task_idx = find_task_line(lines, task_name, end_idx=done_section)
+            if task_idx is not None:
+                original = lines[task_idx]
+                updated = re.sub(r"\[.\]", "[/]", original, count=1).rstrip()
+                if "_(cancelled:" not in updated:
+                    updated += f" _(cancelled: {ts})_"
+                lines.pop(task_idx)
+                _insert_under_dated_section(
+                    lines, "Cancelled", updated, today_str, anchor_after="Done"
+                )
 
-        _atomic_write_text(core_path, "\n".join(lines))
+            _atomic_write_text(core_path, "\n".join(lines))
 
     _snapshot_focus_if_touched(data, src_title)
 
@@ -3787,6 +3799,8 @@ def apply_rename(task_id, new_name):
     task, source_section = find_task_by_id(data, task_id)
     if task is None:
         return False
+    if source_section and source_section.get("type") == "goalie":
+        return task  # goalie tasks are journal-sourced; rename not supported
     old_name = task.get("task", "")
     if old_name == new_name:
         return task  # no-op success
@@ -3960,6 +3974,9 @@ def apply_reorder(from_num, to_num, before=True):
 
     if not src_task or not tgt_task or src_section is None or tgt_section is None:
         return False
+
+    if (src_section.get("type") == "goalie") != (tgt_section.get("type") == "goalie"):
+        return src_task  # prevent cross-type section drags
 
     tgt_idx = next((i for i, t in enumerate(tgt_section["tasks"]) if t.get("id") == to_num), None)
     if tgt_idx is None:
