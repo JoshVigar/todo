@@ -440,6 +440,12 @@ body {
   background: linear-gradient(180deg, rgba(240, 136, 62, 0.05) 0%, #1c2128 80%);
 }
 .task-card.high-priority .section-header { color: #f0883e; }
+.task-card.goalie {
+  border-color: rgba(188, 140, 255, 0.35);
+  background: linear-gradient(180deg, rgba(188, 140, 255, 0.05) 0%, #1c2128 80%);
+}
+.task-card.goalie .section-header { color: #bc8cff; }
+.task-card.goalie.collapsed .goalie-section-body { display: none; }
 table { width: 100%; border-collapse: collapse; margin-bottom: 8px; table-layout: fixed; }
 th {
   position: sticky; top: 0; z-index: 1;
@@ -2032,6 +2038,18 @@ document.addEventListener('click', function(e) {
     });
     return;
   }
+  // Goalie section chevron → toggle the whole section body.
+  var goalieChevron = e.target.closest('.task-card.goalie [data-action="expand-all"]');
+  if (goalieChevron) {
+    e.preventDefault();
+    e.stopPropagation();
+    var gsec = goalieChevron.closest('.task-card.goalie');
+    if (gsec) {
+      gsec.classList.toggle('collapsed');
+      goalieChevron.textContent = gsec.classList.contains('collapsed') ? '▾' : '▴';
+    }
+    return;
+  }
   // Section header chevron in slack view → toggle the whole section's
   // collapsed state. Runs BEFORE the generic expand-all handler because
   // slack sections don't contain task rows for it to expand.
@@ -2402,7 +2420,7 @@ def render_counts_strip(data):
     return f'<div class="counts-strip">{"".join(groups)}</div>\n'
 
 
-def render_goalie_section(title, tasks):
+def render_goalie_section(title, tasks, *, collapsed=False):
     if not tasks:
         return ""
     color = SECTION_COLORS["goalie"]
@@ -2421,7 +2439,8 @@ def render_goalie_section(title, tasks):
             f'</tr>'
         )
     return (
-        _section_header(title, color, subtitle=f"{len(tasks)}")
+        _section_header(f"🏈 {title}", color, expandable=True, subtitle=f"{len(tasks)}", collapsed=collapsed)
+        + '<div class="goalie-section-body">'
         + '<table><thead><tr>'
         '<th style="width:2%">#</th>'
         '<th>Task</th>'
@@ -2429,7 +2448,8 @@ def render_goalie_section(title, tasks):
         '<th style="width:7%">Status</th>'
         '</tr></thead><tbody>\n'
         + "\n".join(rows)
-        + "\n</tbody></table>\n"
+        + "\n</tbody></table>"
+        + '</div>\n'
     )
 
 def render_completed(tasks):
@@ -2651,7 +2671,7 @@ def _build_dashboard_body(data, week):
     # Goalie sections (if any) — full width above the grid
     for section in data.get("sections", []):
         if section.get("type") == "goalie":
-            parts.append(card(render_goalie_section(section.get("title", ""), section.get("tasks", []))))
+            parts.append(card(render_goalie_section(section.get("title", ""), section.get("tasks", []), collapsed=section.get("title") in ("Then", "Handover")), variant="goalie"))
 
     # Two-column grid: left = active (full detail), right = monitoring + lower (compact)
     LEFT  = (SEC_FOCUS, SEC_HIGH)
@@ -2711,7 +2731,7 @@ def _build_classic_body(data, week):
         title = section.get("title", "")
         tasks = section.get("tasks", [])
         if stype == "goalie":
-            parts.append(card(render_goalie_section(title, tasks)))
+            parts.append(card(render_goalie_section(title, tasks, collapsed=title in ("Then", "Handover")), variant="goalie"))
         else:
             sub = focus_sub if title == SEC_FOCUS else ""
             parts.append(card(
@@ -2842,7 +2862,7 @@ def _build_goalie_body(data, week):
     goalie_sections = [s for s in data.get("sections", []) if s.get("type") == "goalie"]
     if goalie_sections:
         for section in goalie_sections:
-            parts.append(card(render_goalie_section(section.get("title", ""), section.get("tasks", []))))
+            parts.append(card(render_goalie_section(section.get("title", ""), section.get("tasks", []), collapsed=section.get("title") in ("Then", "Handover")), variant="goalie"))
     elif data.get("on_goalie"):
         parts.append(
             '<div class="task-card">'
@@ -2858,7 +2878,9 @@ def _build_goalie_body(data, week):
             '</div>'
         )
 
-    # completed_today intentionally omitted — goalie view is focused on active rotation work
+    completed_html = render_compact_completed(data.get("completed_today", []), week)
+    if completed_html:
+        parts.append(card(completed_html))
 
     if data.get("updated"):
         parts.append(
