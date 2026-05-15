@@ -445,7 +445,7 @@ body {
   background: linear-gradient(180deg, rgba(188, 140, 255, 0.05) 0%, #1c2128 80%);
 }
 .task-card.goalie .section-header { color: #bc8cff; }
-.task-card.goalie.collapsed .goalie-section-body { display: none; }
+.goalie-section.collapsed .goalie-section-body { display: none; }
 table { width: 100%; border-collapse: collapse; margin-bottom: 8px; table-layout: fixed; }
 th {
   position: sticky; top: 0; z-index: 1;
@@ -2039,11 +2039,11 @@ document.addEventListener('click', function(e) {
     return;
   }
   // Goalie section chevron → toggle the whole section body.
-  var goalieChevron = e.target.closest('.task-card.goalie [data-action="expand-all"]');
+  var goalieChevron = e.target.closest('.goalie-section [data-action="expand-all"]');
   if (goalieChevron) {
     e.preventDefault();
     e.stopPropagation();
-    var gsec = goalieChevron.closest('.task-card.goalie');
+    var gsec = goalieChevron.closest('.goalie-section');
     if (gsec) {
       gsec.classList.toggle('collapsed');
       goalieChevron.textContent = gsec.classList.contains('collapsed') ? '▾' : '▴';
@@ -2438,8 +2438,10 @@ def render_goalie_section(title, tasks, *, collapsed=False):
             f'<td>{render_status(t.get("status","open"), task_id)}</td>'
             f'</tr>'
         )
+    section_cls = "goalie-section collapsed" if collapsed else "goalie-section"
     return (
-        _section_header(f"🏈 {title}", color, expandable=True, subtitle=f"{len(tasks)}", collapsed=collapsed)
+        f'<div class="{section_cls}">'
+        + _section_header(f"🏈 {title}", color, expandable=True, subtitle=f"{len(tasks)}", collapsed=collapsed)
         + '<div class="goalie-section-body">'
         + '<table><thead><tr>'
         '<th style="width:2%">#</th>'
@@ -2449,6 +2451,7 @@ def render_goalie_section(title, tasks, *, collapsed=False):
         '</tr></thead><tbody>\n'
         + "\n".join(rows)
         + "\n</tbody></table>"
+        + '</div>'
         + '</div>\n'
     )
 
