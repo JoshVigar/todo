@@ -2486,30 +2486,76 @@ def render_completed(tasks):
         + "\n</tbody></table>\n"
     )
 
+def _task_content(line):
+    """Strip - [x] prefix, leading priority emoji, and all _(...)_ metadata tags; used for deduplication."""
+    s = re.sub(r"^-\s+\[x\]\s+", "", line)
+    s = re.sub(r"^[^\x00-\x7F]+\s*", "", s)  # strip leading emoji (core file includes priority markers, journal doesn't)
+    s = re.sub(r"\s*_\([^)]*\)_", "", s)
+    return s.strip()
+
+
 def compute_completions(dates):
-    """Returns {ISO date: count} for the given dates by reading whichever core files cover them."""
+    """Returns {ISO date: count} for the given dates by reading both core and journal files.
+
+    Both sources are unioned and deduplicated by task content (metadata tags stripped),
+    so items that appear in both files (e.g. core tasks also logged in the daily journal)
+    are counted only once.
+    """
     weeks_needed = set()
     for d in dates:
         y, w, _ = d.isocalendar()
         weeks_needed.add((y, w))
     counts = {}
     for y, w in weeks_needed:
-        path = Path.home() / "todo" / "journal" / f"{y}-W{w:02d}-core.md"
+        # seen: {date -> set of cleaned task strings} for deduplication across both files
+        seen: dict[str, set] = {}
+
+        # Journal file: ## [Weekday] YYYY-MM-DD / ### Done / - [x] ...
+        journal_path = Path.home() / "todo" / "journal" / f"{y}-W{w:02d}.md"
         try:
-            text = path.read_text()
+            text = journal_path.read_text()
+            cur_date = None
+            in_done = False
+            for line in text.splitlines():
+                dm = re.match(r"^##\s+\w+\s+(\d{4}-\d{2}-\d{2})", line)
+                if dm:
+                    cur_date = dm.group(1)
+                    in_done = False
+                    continue
+                if cur_date and re.match(r"^###\s+Done", line):
+                    in_done = True
+                    continue
+                if re.match(r"^##", line):
+                    in_done = False
+                    continue
+                if in_done and line.startswith("- [x]"):
+                    key = _task_content(line)
+                    if key not in seen.setdefault(cur_date, set()):
+                        seen[cur_date].add(key)
+                        counts[cur_date] = counts.get(cur_date, 0) + 1
         except Exception:
-            continue
-        idx = text.find("\n## Done")
-        if idx < 0:
-            continue
-        cur_date = None
-        for line in text[idx:].splitlines():
-            m = re.match(r"^###\s+(\d{4}-\d{2}-\d{2})", line)
-            if m:
-                cur_date = m.group(1)
-                continue
-            if cur_date and line.startswith("- [x]"):
-                counts[cur_date] = counts.get(cur_date, 0) + 1
+            pass
+
+        # Core file: ## Done / ### YYYY-MM-DD / - [x] ...
+        core_path = Path.home() / "todo" / "journal" / f"{y}-W{w:02d}-core.md"
+        try:
+            text = core_path.read_text()
+            idx = text.find("\n## Done")
+            if idx >= 0:
+                cur_date = None
+                for line in text[idx:].splitlines():
+                    m = re.match(r"^###\s+(\d{4}-\d{2}-\d{2})", line)
+                    if m:
+                        cur_date = m.group(1)
+                        continue
+                    if cur_date and line.startswith("- [x]"):
+                        key = _task_content(line)
+                        if key not in seen.setdefault(cur_date, set()):
+                            seen[cur_date].add(key)
+                            counts[cur_date] = counts.get(cur_date, 0) + 1
+        except Exception:
+            pass
+
     return counts
 
 
