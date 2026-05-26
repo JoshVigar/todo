@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "generated_at": "2026-05-22T10:30:00+01:00",
+  "items": [
+    {
+      "email_id": "19dfa30aa61a4fed",
+      "thread_id": "19dfa30aa61a4fed",
+      "category": "gh_support",
+      "tier": "action_needed",
+      "sender": "GitHub Support (Scott C.)",
+      "sender_email": "noreply@githubsupport.com",
+      "subject": "Patch upgrading production 3.19.5",
+      "snippet": "Thank you for the notification. I have noted your upgrade time in our internal calendar.",
+      "ts": "2026-05-05T23:09:45+01:00",
+      "link": "https://mail.google.com/mail/u/0/#inbox/19dfa30aa61a4fed",
+      "gh_ticket_id": "4356033",
+      "action_hint": "Acknowledgement — no action needed"
+    },
+    {
+      "email_id": "19df90729a9a013b",
+      "thread_id": "19dd8978c363136c",
+      "category": "gh_support",
+      "tier": "action_needed",
+      "sender": "GitHub Support (James)",
+      "sender_email": "noreply@githubsupport.com",
+      "subject": "Ongoing IdP issues related to 4061807",
+      "snippet": "Just a quick update, if you could try and find just one example of the following...",
+      "ts": "2026-05-05T17:44:45+01:00",
+      "link": "https://mail.google.com/mail/u/0/#inbox/19df90729a9a013b",
+      "gh_ticket_id": "4338773",
+      "action_hint": "GH Support asking for info — reply needed"
+    },
+    {
+      "email_id": "19ddf6e9320eba23",
+      "thread_id": "19dded542b9a34fc",
+      "category": "gh_support",
+      "tier": "action_needed",
+      "sender": "GitHub Support (Olliec)",
+      "sender_email": "noreply@githubsupport.com",
+      "subject": "GHES latency with unknown causes",
+      "snippet": "Based on the data, the latency window was driven by a mergeability storm centered on spotify/services-pilot...",
+      "ts": "2026-04-30T18:27:36+01:00",
+      "link": "https://mail.google.com/mail/u/0/#inbox/19ddf6e9320eba23",
+      "gh_ticket_id": "4342259",
+      "action_hint": "Root cause analysis shared — review findings"
+    },
+    {
+      "email_id": "fake-general-001",
+      "thread_id": "fake-general-001",
+      "category": "general",
+      "tier": "action_needed",
+      "sender": "Jonatan Liljestrand",
+      "sender_email": "jonatan@spotify.com",
+      "subject": "Missing from contributors page",
+      "snippet": "Hey Josh, noticed you're not on the client/client contributors list — was that intentional?",
+      "ts": "2026-05-19T14:30:00+01:00",
+      "link": "https://mail.google.com/mail/u/0/#inbox/fake-general-001",
+      "action_hint": "Reply needed"
+    },
+    {
+      "email_id": "fake-general-002",
+      "thread_id": "fake-general-002",
+      "category": "general",
+      "tier": "fyi",
+      "sender": "Design Systems Team",
+      "sender_email": "design-systems@spotify.com",
+      "subject": "New Encore v4 components available",
+      "snippet": "We're happy to announce new Table and Dialog components in Encore v4.",
+      "ts": "2026-05-20T09:00:00+01:00",
+      "link": "https://mail.google.com/mail/u/0/#inbox/fake-general-002",
+      "action_hint": "FYI — review when convenient"
+    },
+    {
+      "email_id": "fake-general-003",
+      "thread_id": "fake-general-003",
+      "category": "general",
+      "tier": "already_handled",
+      "sender": "GitHub Notifications",
+      "sender_email": "notifications@github.com",
+      "subject": "PR #42 merged: Fix edge-proxy cert rotation",
+      "snippet": "Your pull request has been merged by josh-v.",
+      "ts": "2026-05-21T16:45:00+01:00",
+      "link": "https://mail.google.com/mail/u/0/#inbox/fake-general-003",
+      "action_hint": "Already merged"
+    }
+  ],
+  "summary": { "total_fetched": 42, "filtered_noise": 35, "gh_support_threads": 3 }
+}

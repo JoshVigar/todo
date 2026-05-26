@@ -62,6 +62,15 @@ SLACK_DISMISS_TTL_DAYS = 14
 # without needing a separate cron.
 SLACK_LOG_COMPACT_BYTES = 100_000
 
+EMAIL_SNAPSHOT_FILE     = Path.home() / "todo" / "email-triage.json"
+EMAIL_DISMISSED_FILE    = Path.home() / "todo" / "email-dismissed.jsonl"
+EMAIL_CONVERTED_FILE    = Path.home() / "todo" / "email-converted.jsonl"
+EMAIL_SNAPSHOT_VERSION  = 1
+EMAIL_DISMISS_TTL_DAYS  = 14
+
+GH_SUPPORT_SNAPSHOT_FILE    = Path.home() / "todo" / "gh-support-triage.json"
+GH_SUPPORT_SNAPSHOT_VERSION = 1
+
 
 _LOG_MAX_BYTES = 1_000_000  # ~1MB, then truncate to last half
 
@@ -140,6 +149,8 @@ _state_lock = threading.Lock()
 # Separate lock for slack-{triage,dismissed,converted}.json read-modify-writes.
 # Always acquired AFTER _state_lock when both are needed (convert uses both).
 _slack_lock = threading.Lock()
+
+_email_lock = threading.Lock()
 
 
 def _safe_mtime(path):
@@ -223,7 +234,12 @@ def _state_signature():
     slack_t = _safe_mtime(SLACK_SNAPSHOT_FILE)
     slack_d = _safe_mtime(SLACK_DISMISSED_FILE)
     slack_c = _safe_mtime(SLACK_CONVERTED_FILE)
-    return (json_m, src_m, core_m, slack_t, slack_d, slack_c)
+    email_t = _safe_mtime(EMAIL_SNAPSHOT_FILE)
+    email_d = _safe_mtime(EMAIL_DISMISSED_FILE)
+    email_c = _safe_mtime(EMAIL_CONVERTED_FILE)
+    ghs_t   = _safe_mtime(GH_SUPPORT_SNAPSHOT_FILE)
+    return (json_m, src_m, core_m, slack_t, slack_d, slack_c,
+            email_t, email_d, email_c, ghs_t)
 
 
 _sse_clients = 0  # active /events stream count; protected by _state_cond
@@ -709,6 +725,8 @@ p.counts { margin: 6px 0; color: #8b949e; font-size: 12px; }
 #modal[data-mode="edit"] .modal-completed-section,
 #modal[data-mode="slack-convert"] .modal-sep,
 #modal[data-mode="slack-convert"] .modal-completed-section { display: none; }
+#modal[data-mode="email-convert"] .modal-sep,
+#modal[data-mode="email-convert"] .modal-completed-section { display: none; }
 #modal-cancel {
   background: none; border: 1px solid #30363d; color: #a8b3c0;
   padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 13px;
@@ -982,6 +1000,158 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 .slack-empty-state h3 { color: #c9d1d9; margin: 0 0 8px; }
 .slack-empty-state p { margin: 0; font-size: 13px; }
 .slack-empty-state code {
+  background: #161b22; padding: 1px 6px; border-radius: 3px;
+  font-family: ui-monospace, monospace; font-size: 12px;
+}
+/* ---------- Email triage view ---------- */
+.email-header {
+  padding: 8px 12px; color: #8b949e; font-size: 12px; margin-bottom: 8px;
+}
+.email-refresh-ts { color: #c9d1d9; font-family: ui-monospace, monospace; }
+.email-refresh-rel { color: #c9d1d9; }
+.email-stale {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  background: rgba(210, 153, 34, 0.15); color: #d29922;
+  font-size: 10px; font-weight: 600; margin-left: 4px;
+}
+.email-section.collapsed .email-section-body { display: none; }
+.email-row {
+  display: grid; grid-template-columns: 1fr auto;
+  grid-template-areas: "meta actions" "subject actions" "snippet actions";
+  gap: 2px 12px; padding: 10px 12px; border-bottom: 1px solid #21262d;
+  align-items: start;
+}
+.email-row:last-child { border-bottom: none; }
+.email-row:hover { background: #161b22; }
+.email-meta { grid-area: meta; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.email-sender { color: #e6edf3; font-weight: 600; }
+.email-ticket-badge {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  background: rgba(188, 140, 255, 0.15); color: #bc8cff;
+  font-size: 10px; font-family: ui-monospace, monospace;
+  text-decoration: none;
+}
+.email-ticket-badge:hover { background: rgba(188, 140, 255, 0.25); }
+.email-ts { color: #6e7681; font-size: 11px; }
+.email-gmail-link {
+  color: #8b949e; font-size: 11px; text-decoration: none;
+  background: #21262d; border: 1px solid #30363d; border-radius: 4px;
+  padding: 2px 7px;
+}
+.email-gmail-link:hover { background: #30363d; color: #e6edf3; border-color: #444c56; }
+.email-subject { grid-area: subject; color: #c9d1d9; font-size: 13px; font-weight: 500; }
+.email-snippet {
+  grid-area: snippet;
+  color: #8b949e; font-size: 12px; line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.email-actions {
+  grid-area: actions; display: flex; gap: 6px; align-self: center;
+}
+.email-actions button {
+  background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+  border-radius: 4px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+}
+.email-actions button:hover { background: #30363d; color: #e6edf3; }
+.email-actions .email-dismiss:hover { color: #f85149; border-color: #f85149; }
+.email-actions .btn-icon { font-weight: 700; margin-right: 2px; }
+.email-empty { padding: 16px 12px; color: #6e7681; font-style: italic; }
+.email-noise {
+  margin: 12px 0 0; padding: 8px 12px;
+  color: #6e7681; font-size: 11px; font-style: italic;
+}
+.email-empty-state {
+  padding: 32px 24px; text-align: center; color: #8b949e;
+}
+.email-empty-state h3 { color: #c9d1d9; margin: 0 0 8px; }
+.email-empty-state p { margin: 0; font-size: 13px; }
+.email-empty-state code {
+  background: #161b22; padding: 1px 6px; border-radius: 3px;
+  font-family: ui-monospace, monospace; font-size: 12px;
+}
+/* ---------- GH Support ticket view ---------- */
+.ghsupport-header {
+  padding: 8px 12px; color: #8b949e; font-size: 12px; margin-bottom: 8px;
+}
+.ghsupport-stale {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  background: rgba(210, 153, 34, 0.15); color: #d29922;
+  font-size: 10px; font-weight: 600; margin-left: 4px;
+}
+.ghsupport-ticket { margin-bottom: 8px; }
+.ghsupport-ticket.collapsed .ghsupport-thread { display: none; }
+.ghsupport-ticket-header {
+  display: flex; align-items: center; gap: 10px; padding: 12px;
+  cursor: pointer; user-select: none;
+}
+.ghsupport-ticket-header:hover { background: #161b22; border-radius: 6px; }
+.ghsupport-chevron { color: #6e7681; font-size: 22px; line-height: 1; width: 22px; text-align: center; }
+.ghsupport-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  background: rgba(188, 140, 255, 0.15); color: #bc8cff;
+  font-size: 12px; font-family: ui-monospace, monospace;
+  text-decoration: none; font-weight: 600; white-space: nowrap;
+}
+.ghsupport-badge:hover { background: rgba(188, 140, 255, 0.25); }
+.ghsupport-subject { color: #e6edf3; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ghsupport-status {
+  padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600;
+  white-space: nowrap;
+}
+.ghsupport-status.waiting-us { background: rgba(240, 136, 62, 0.15); color: #f0883e; }
+.ghsupport-status.waiting-github { background: rgba(56, 139, 253, 0.15); color: #388bfd; }
+.ghsupport-meta { color: #8b949e; font-size: 11px; white-space: nowrap; }
+.ghsupport-links {
+  display: flex; gap: 6px; margin-left: auto; white-space: nowrap;
+}
+.ghsupport-links a {
+  color: #8b949e; font-size: 11px; text-decoration: none;
+  background: #21262d; border: 1px solid #30363d; border-radius: 4px;
+  padding: 3px 8px;
+}
+.ghsupport-links a:hover { background: #30363d; color: #e6edf3; border-color: #444c56; }
+.ghsupport-thread { padding: 0 12px 12px; }
+.ghsupport-message { padding: 12px; border-top: 1px solid #21262d; }
+.ghsupport-message:first-child { border-top: none; }
+.ghsupport-message:nth-child(odd) { background: #0d1117; }
+.ghsupport-message:nth-child(even) { background: #161b22; }
+.ghsupport-msg-header {
+  display: flex; gap: 8px; align-items: center;
+  padding-bottom: 8px; margin-bottom: 8px;
+  border-bottom: 1px solid rgba(139, 148, 158, 0.15);
+}
+.ghsupport-author {
+  padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600;
+}
+.ghsupport-author.support { background: rgba(188, 140, 255, 0.15); color: #bc8cff; }
+.ghsupport-author.spotify { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
+.ghsupport-msg-ts { color: #6e7681; font-size: 11px; }
+.ghsupport-msg-content {
+  color: #c9d1d9; font-size: 13px; line-height: 1.6;
+  overflow-wrap: anywhere; padding-left: 16px;
+}
+.ghsupport-msg-content strong, .ghsupport-msg-content b { color: #e6edf3; }
+.ghsupport-msg-content code {
+  background: #343942; padding: 2px 6px; border-radius: 3px;
+  font-family: ui-monospace, monospace; font-size: 12px;
+  color: #e6edf3; border: 1px solid #444c56;
+}
+.ghsupport-msg-content blockquote {
+  border-left: 3px solid #30363d; padding: 2px 0 2px 12px;
+  margin: 6px 0; color: #8b949e;
+}
+.ghsupport-msg-content ul, .ghsupport-msg-content ol {
+  margin: 4px 0; padding-left: 20px;
+}
+.ghsupport-msg-content li { margin: 2px 0; }
+.ghsupport-msg-content a { color: #58a6ff; text-decoration: none; }
+.ghsupport-msg-content a:hover { text-decoration: underline; }
+.ghsupport-empty-state {
+  padding: 32px 24px; text-align: center; color: #8b949e;
+}
+.ghsupport-empty-state h3 { color: #c9d1d9; margin: 0 0 8px; }
+.ghsupport-empty-state p { margin: 0; font-size: 13px; }
+.ghsupport-empty-state code {
   background: #161b22; padding: 1px 6px; border-radius: 3px;
   font-family: ui-monospace, monospace; font-size: 12px;
 }
@@ -1422,6 +1592,7 @@ var _editFetchToken = 0;
 // Slack triage convert flow reuses the Add modal; this holds the source
 // item's id so the save handler can route to /slack/convert.
 var _slackConvertId = null;
+var _emailConvertId = null;
 function _resetModal() {
   ['m-task','m-due','m-why','m-link-label','m-link-url'].forEach(function(id){
     var el = document.getElementById(id);
@@ -1511,6 +1682,7 @@ function closeModal() {
   document.getElementById('modal-overlay').classList.remove('open');
   _editTaskId = null;
   _slackConvertId = null;
+  _emailConvertId = null;
   var modal = document.getElementById('modal');
   if (modal) modal.dataset.mode = 'add';
 }
@@ -1557,6 +1729,9 @@ document.getElementById('modal-save').addEventListener('click', function() {
   } else if (mode === 'slack-convert') {
     payload.id = _slackConvertId;
     _post('/slack/convert', payload).then(_onSaved);
+  } else if (mode === 'email-convert') {
+    payload.id = _emailConvertId;
+    _post('/email/convert', payload).then(_onSaved);
   } else {
     _post('/add', payload).then(_onSaved);
   }
@@ -2061,6 +2236,91 @@ document.addEventListener('click', function(e) {
     if (sec) {
       sec.classList.toggle('collapsed');
       slackChevron.textContent = sec.classList.contains('collapsed') ? '▾' : '▴';
+    }
+    return;
+  }
+  // Email view: convert button
+  var emailConvert = e.target.closest('.email-convert');
+  if (emailConvert) {
+    e.preventDefault();
+    e.stopPropagation();
+    var erow = emailConvert.closest('.email-row');
+    if (!erow) return;
+    var eItems = (function() {
+      var el = document.getElementById('email-items-data');
+      if (!el) return {};
+      try { return JSON.parse(el.textContent); } catch(x) { return {}; }
+    })();
+    var eItem = eItems[erow.dataset.id];
+    if (!eItem) return;
+    if (e.metaKey || e.ctrlKey) {
+      var eName = 'Reply to ' + (eItem.sender || '') + ': ' + (eItem.subject || '');
+      var ePayload = {
+        id: eItem.email_id || '',
+        task: eName,
+        pri: 'P2', due: '—',
+        why: eItem.snippet || '—',
+        link_label: 'Email',
+        link_url: eItem.link || ''
+      };
+      _post('/email/convert', ePayload).then(function(r) {
+        if (r.ok) erow.remove();
+      });
+      return;
+    }
+    _editFetchToken++;
+    _resetModal();
+    _editTaskId = null;
+    _emailConvertId = eItem.email_id || '';
+    document.getElementById('m-task').value = 'Reply to ' + (eItem.sender || '') + ': ' + (eItem.subject || '');
+    document.getElementById('m-why').value = eItem.snippet || '';
+    document.getElementById('m-link-label').value = 'Email';
+    document.getElementById('m-link-url').value = eItem.link || '';
+    document.getElementById('m-pri').value = 'P2';
+    var eModal = document.getElementById('modal');
+    eModal.dataset.mode = 'email-convert';
+    document.getElementById('modal-title').textContent = 'Convert email to task';
+    document.getElementById('modal-save').textContent = 'Add task';
+    document.getElementById('modal-overlay').classList.add('open');
+    setTimeout(function(){ document.getElementById('m-task').focus(); }, 50);
+    return;
+  }
+  // Email view: dismiss button
+  var emailDismiss = e.target.closest('.email-dismiss');
+  if (emailDismiss) {
+    e.preventDefault();
+    e.stopPropagation();
+    var edrow = emailDismiss.closest('.email-row');
+    if (!edrow) return;
+    var eid = edrow.dataset.id;
+    if (eid) _post('/email/dismiss', {id: eid}).then(function(r) {
+      if (r.ok) edrow.remove();
+    });
+    return;
+  }
+  // Email section chevron
+  var emailChevron = e.target.closest('.email-section [data-action="expand-all"]');
+  if (emailChevron) {
+    e.preventDefault();
+    e.stopPropagation();
+    var esec = emailChevron.closest('.email-section');
+    if (esec) {
+      esec.classList.toggle('collapsed');
+      emailChevron.textContent = esec.classList.contains('collapsed') ? '▾' : '▴';
+    }
+    return;
+  }
+  // GH Support ticket expand/collapse
+  var ghHeader = e.target.closest('[data-action="toggle-ticket"]');
+  if (ghHeader) {
+    if (e.target.closest('a')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var ticket = ghHeader.closest('.ghsupport-ticket');
+    if (ticket) {
+      ticket.classList.toggle('collapsed');
+      var chev = ticket.querySelector('.ghsupport-chevron');
+      if (chev) chev.textContent = ticket.classList.contains('collapsed') ? '▸' : '▾';
     }
     return;
   }
@@ -2706,7 +2966,7 @@ def render_compact_completed(tasks, week=""):
         + f'<div class="cmp-section">{"".join(rows)}</div>\n'
     )
 
-VIEWS = ["dashboard", "classic", "goalie", "slack"]
+VIEWS = ["dashboard", "classic", "goalie", "slack", "email", "ghsupport"]
 
 def _build_dashboard_body(data, week):
     parts = []  # counts strip now lives in the topbar (see _view_switcher_html)
@@ -3061,6 +3321,389 @@ def _build_slack_body(data, week):
     return "".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Email triage view
+# ---------------------------------------------------------------------------
+
+EMAIL_TIER_LABEL = {
+    "action_needed":    "Action Needed",
+    "fyi":              "FYI",
+    "already_handled":  "Already Handled",
+}
+
+
+def _render_email_section(label, items, *, color, collapsed=False):
+    rows = []
+    for it in items:
+        sender = it.get("sender") or "?"
+        sender_email = it.get("sender_email") or ""
+        subject = it.get("subject") or "(no subject)"
+        ts_iso = it.get("ts") or ""
+        ts_rel = _slack_relative_time(ts_iso)
+        link = it.get("link") or "#"
+        snippet = it.get("snippet") or ""
+        item_id = it.get("email_id") or ""
+        gh_ticket = it.get("gh_ticket_id") or ""
+        ticket_badge = ""
+        if gh_ticket:
+            ticket_url = f"https://support.github.com/ticket/{h(gh_ticket)}"
+            ticket_badge = (
+                f' <a class="email-ticket-badge" href="{ticket_url}" '
+                f'target="_blank" rel="noopener noreferrer">#{h(gh_ticket)}</a>'
+            )
+        rows.append(
+            f'<div class="email-row" data-id="{h(item_id)}">'
+            f'<div class="email-meta">'
+            f'<span class="email-sender">{h(sender)}</span>{ticket_badge}'
+            f'<span class="email-ts" title="{h(ts_iso)}">{h(ts_rel)}</span>'
+            f'<a class="email-gmail-link" href="{h(link)}" '
+            f'target="_blank" rel="noopener noreferrer">Gmail ↗</a>'
+            f'</div>'
+            f'<div class="email-subject">{h(subject)}</div>'
+            f'<div class="email-snippet">{h(snippet)}</div>'
+            f'<div class="email-actions">'
+            f'<button class="email-convert" type="button" '
+            f'title="Convert to task (⌘+click for quick-add)">'
+            f'<span class="btn-icon">+</span> Convert</button>'
+            f'<button class="email-dismiss" type="button" '
+            f'title="Dismiss this email">'
+            f'<span class="btn-icon">×</span> Dismiss</button>'
+            f'</div>'
+            f'</div>'
+        )
+    body = "".join(rows) or '<div class="email-empty">Nothing here.</div>'
+    cls = "email-section" + (" collapsed" if collapsed else "")
+    return (
+        f'<div class="task-card {cls}" data-tier="{h(label)}">'
+        f'{_section_header(label, color, expandable=True, subtitle=str(len(items)), collapsed=collapsed)}'
+        f'<div class="email-section-body">{body}</div>'
+        f'</div>'
+    )
+
+
+def _build_email_body(data, week):
+    parts = []
+
+    snapshot = load_email_snapshot()
+    if snapshot is None:
+        return (
+            '<div class="task-card email-empty-state">'
+            '<h3>No email snapshot yet</h3>'
+            '<p>Run <code>/email</code> in Claude Code to populate this view. '
+            'The skill will write '
+            '<code>~/todo/email-triage.json</code> and this page will refresh.'
+            '</p></div>'
+        )
+    if snapshot.get("_error") == "malformed":
+        return (
+            '<div class="task-card email-empty-state">'
+            '<h3>Snapshot is unreadable</h3>'
+            '<p><code>~/todo/email-triage.json</code> exists but failed to parse. '
+            'Re-run <code>/email</code> to regenerate.</p></div>'
+        )
+    if snapshot.get("_error") == "version":
+        got = snapshot.get("got")
+        return (
+            '<div class="task-card email-empty-state">'
+            '<h3>Snapshot version not supported</h3>'
+            f'<p>Expected version <code>{EMAIL_SNAPSHOT_VERSION}</code>, got '
+            f'<code>{h(got)}</code>.</p></div>'
+        )
+
+    items = snapshot.get("items", []) or []
+    dismissed = load_email_dismissed()
+    converted = load_email_converted()
+
+    visible = [it for it in items
+               if it.get("email_id") not in dismissed
+               and it.get("email_id") not in converted]
+
+    gen_at = snapshot.get("generated_at", "")
+    rel = _slack_relative_time(gen_at) if gen_at else "unknown"
+    is_stale = False
+    try:
+        gen_dt = datetime.datetime.fromisoformat(gen_at) if gen_at else None
+    except (TypeError, ValueError):
+        gen_dt = None
+    if gen_dt is not None:
+        now = datetime.datetime.now(gen_dt.tzinfo) if gen_dt.tzinfo else datetime.datetime.now()
+        if (now - gen_dt).total_seconds() > 24 * 3600:
+            is_stale = True
+    stale_badge = ' <span class="email-stale">stale</span>' if is_stale else ''
+    header = (
+        f'<div class="email-header">'
+        f'Last refreshed <span class="email-refresh-ts">{h(gen_at) or "—"}</span>'
+        f' (<span class="email-refresh-rel">{h(rel)}</span>){stale_badge}'
+        f'</div>'
+    )
+    parts.append(header)
+
+    gh_support = [it for it in visible if it.get("category") == "gh_support"]
+    general = [it for it in visible if it.get("category") != "gh_support"]
+    by_tier = {"action_needed": [], "fyi": [], "already_handled": []}
+    for it in general:
+        tier = it.get("tier") or "fyi"
+        by_tier.setdefault(tier, []).append(it)
+
+    if gh_support:
+        parts.append(_render_email_section(
+            "GH Support Tickets", gh_support,
+            color="#bc8cff", collapsed=False,
+        ))
+
+    parts.append(_render_email_section(
+        EMAIL_TIER_LABEL["action_needed"], by_tier["action_needed"],
+        color="#f0883e", collapsed=False,
+    ))
+    parts.append(_render_email_section(
+        EMAIL_TIER_LABEL["fyi"], by_tier["fyi"],
+        color="#388bfd", collapsed=False,
+    ))
+    parts.append(_render_email_section(
+        EMAIL_TIER_LABEL["already_handled"], by_tier["already_handled"],
+        color="#3fb950", collapsed=True,
+    ))
+
+    summary = snapshot.get("summary") or {}
+    if summary:
+        total = summary.get("total_fetched", 0)
+        noise = summary.get("filtered_noise", 0)
+        parts.append(f'<p class="email-noise">{total} emails fetched, {noise} filtered as noise</p>')
+
+    items_json = json.dumps(
+        {it.get("email_id", ""): it for it in visible},
+        ensure_ascii=False,
+    )
+    items_json_safe = items_json.replace("</script", "<\\/script")
+    parts.append(
+        f'<script type="application/json" id="email-items-data">'
+        f'{items_json_safe}</script>'
+    )
+
+    return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# GH Support ticket conversation view
+# ---------------------------------------------------------------------------
+
+def _md_to_html(text):
+    """Lightweight markdown→HTML for GH Support messages.
+    Input is raw text (NOT pre-escaped). Output is safe HTML."""
+    lines = text.split("\n")
+    out = []
+    in_list = False
+    for line in lines:
+        stripped = line.strip()
+        # Blockquote
+        if stripped.startswith("> "):
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            out.append(f"<blockquote>{_md_inline(h(stripped[2:]))}</blockquote>")
+            continue
+        # Unordered list
+        if stripped.startswith("- ") or stripped.startswith("* "):
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append(f"<li>{_md_inline(h(stripped[2:]))}</li>")
+            continue
+        # Ordered list
+        m = re.match(r"^(\d+)[.)]\s+(.+)", stripped)
+        if m:
+            if not in_list:
+                out.append("<ol>")
+                in_list = True
+            out.append(f"<li>{_md_inline(h(m.group(2)))}</li>")
+            continue
+        if in_list:
+            tag = "ul" if out[-1].startswith("<li>") or "</ul>" not in "".join(out[-5:]) else "ol"
+            out.append(f"</{tag}>")
+            in_list = False
+        if not stripped:
+            out.append("<br>")
+        else:
+            out.append(_md_inline(h(stripped)))
+            out.append("<br>")
+    if in_list:
+        out.append("</ul>")
+    # Trim trailing <br>
+    while out and out[-1] == "<br>":
+        out.pop()
+    return "\n".join(out)
+
+
+def _md_inline(escaped_text):
+    """Apply inline markdown (bold, code, links) to already-escaped HTML."""
+    t = escaped_text
+    t = re.sub(r'`([^`]+)`', r'<code>\1</code>', t)
+    t = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', t)
+    t = re.sub(
+        r'\[([^\]]+)\]\((https?://[^)]+)\)',
+        r'<a href="\2" target="_blank" rel="noopener noreferrer">\1</a>',
+        t,
+    )
+    # Bare URLs (not already inside an href)
+    t = re.sub(
+        r'(?<!href=&quot;)(?<!href=")(https?://[^\s<&]+)',
+        r'<a href="\1" target="_blank" rel="noopener noreferrer">\1</a>',
+        t,
+    )
+    return t
+
+
+def _format_ghsupport_ts(iso_str):
+    """Format a GH Support message timestamp as 'May 5, 2026 at 16:44 (3d ago)'."""
+    if not iso_str:
+        return ""
+    try:
+        ts = datetime.datetime.fromisoformat(iso_str)
+    except (TypeError, ValueError):
+        return h(iso_str)
+    date_str = ts.strftime("%b %-d, %Y at %H:%M")
+    rel = _slack_relative_time(iso_str)
+    return f"{h(date_str)} ({h(rel)})"
+
+
+def _render_ghsupport_message(msg):
+    author = msg.get("author") or "?"
+    is_support = msg.get("is_support", False)
+    ts_iso = msg.get("ts") or ""
+    ts_display = _format_ghsupport_ts(ts_iso)
+    content = msg.get("content") or ""
+    author_cls = "support" if is_support else "spotify"
+    content_html = _md_to_html(content)
+    return (
+        f'<div class="ghsupport-message">'
+        f'<div class="ghsupport-msg-header">'
+        f'<span class="ghsupport-author {author_cls}">{h(author)}</span>'
+        f'<span class="ghsupport-msg-ts" title="{h(ts_iso)}">{ts_display}</span>'
+        f'</div>'
+        f'<div class="ghsupport-msg-content">{content_html}</div>'
+        f'</div>'
+    )
+
+
+def _render_ghsupport_ticket(ticket, expanded=False):
+    tid = ticket.get("ticket_id") or "?"
+    ticket_url = ticket.get("ticket_url") or f"https://support.github.com/ticket/{tid}"
+    subject = ticket.get("subject") or "(no subject)"
+    category = ticket.get("category") or ""
+    raised_by = ticket.get("raised_by") or "?"
+    raised_at = ticket.get("raised_at") or ""
+    last_update = ticket.get("last_update") or ""
+    waiting_on = ticket.get("waiting_on") or "unknown"
+    msg_count = ticket.get("message_count") or len(ticket.get("messages", []))
+    messages = ticket.get("messages") or []
+    gmail_link = ticket.get("gmail_link") or ""
+
+    last_rel = _slack_relative_time(last_update) if last_update else "?"
+    raised_rel = _slack_relative_time(raised_at) if raised_at else "?"
+
+    if waiting_on == "us":
+        status_cls = "waiting-us"
+        status_label = "Waiting on us"
+    elif waiting_on == "github":
+        status_cls = "waiting-github"
+        status_label = "Waiting on GitHub"
+    else:
+        status_cls = "waiting-github"
+        status_label = waiting_on.title()
+
+    collapsed_cls = "" if expanded else " collapsed"
+    chevron = "▾" if expanded else "▸"
+
+    msgs_html = "".join(_render_ghsupport_message(m) for m in messages)
+    links_html = (
+        f'<div class="ghsupport-links">'
+        f'<a href="{h(ticket_url)}" target="_blank" rel="noopener noreferrer">Support Portal ↗</a>'
+    )
+    if gmail_link:
+        links_html += f'<a href="{h(gmail_link)}" target="_blank" rel="noopener noreferrer">Gmail ↗</a>'
+    links_html += '</div>'
+
+    return (
+        f'<div class="task-card ghsupport-ticket{collapsed_cls}" data-ticket="{h(tid)}">'
+        f'<div class="ghsupport-ticket-header" data-action="toggle-ticket">'
+        f'<span class="ghsupport-chevron">{chevron}</span>'
+        f'<a class="ghsupport-badge" href="{h(ticket_url)}" '
+        f'target="_blank" rel="noopener noreferrer">#{h(tid)}</a>'
+        f'<span class="ghsupport-status {status_cls}">{status_label}</span>'
+        f'<span class="ghsupport-subject">{h(subject)}</span>'
+        f'<span class="ghsupport-meta">{h(raised_by)} · {h(last_rel)} · {msg_count} msgs</span>'
+        f'{links_html}'
+        f'</div>'
+        f'<div class="ghsupport-thread">'
+        f'{msgs_html}'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def _build_ghsupport_body(data, week):
+    snapshot = load_ghsupport_snapshot()
+    if snapshot is None:
+        return (
+            '<div class="task-card ghsupport-empty-state">'
+            '<h3>No GH Support data yet</h3>'
+            '<p>Run <code>/email</code> in Claude Code to populate this view. '
+            'GH Support tickets from watched tasks will appear here.'
+            '</p></div>'
+        )
+    if snapshot.get("_error") == "malformed":
+        return (
+            '<div class="task-card ghsupport-empty-state">'
+            '<h3>Snapshot is unreadable</h3>'
+            '<p><code>~/todo/gh-support-triage.json</code> exists but failed to parse. '
+            'Re-run <code>/email</code> to regenerate.</p></div>'
+        )
+    if snapshot.get("_error") == "version":
+        got = snapshot.get("got")
+        return (
+            '<div class="task-card ghsupport-empty-state">'
+            '<h3>Snapshot version not supported</h3>'
+            f'<p>Expected version <code>{GH_SUPPORT_SNAPSHOT_VERSION}</code>, got '
+            f'<code>{h(got)}</code>.</p></div>'
+        )
+
+    tickets = snapshot.get("tickets") or []
+    if not tickets:
+        return (
+            '<div class="task-card ghsupport-empty-state">'
+            '<h3>No tracked tickets</h3>'
+            '<p>No GH Support tickets found. Add a ticket link to a task, then run '
+            '<code>/email</code>.</p></div>'
+        )
+
+    tickets_sorted = sorted(tickets, key=lambda t: t.get("last_update", ""), reverse=True)
+
+    gen_at = snapshot.get("generated_at", "")
+    rel = _slack_relative_time(gen_at) if gen_at else "unknown"
+    is_stale = False
+    try:
+        gen_dt = datetime.datetime.fromisoformat(gen_at) if gen_at else None
+    except (TypeError, ValueError):
+        gen_dt = None
+    if gen_dt is not None:
+        now = datetime.datetime.now(gen_dt.tzinfo) if gen_dt.tzinfo else datetime.datetime.now()
+        if (now - gen_dt).total_seconds() > 24 * 3600:
+            is_stale = True
+    stale_badge = ' <span class="ghsupport-stale">stale</span>' if is_stale else ''
+    header = (
+        f'<div class="ghsupport-header">'
+        f'{len(tickets)} ticket{"s" if len(tickets) != 1 else ""} · '
+        f'Last refreshed {h(rel)}{stale_badge}'
+        f'</div>'
+    )
+
+    parts = [header]
+    for i, ticket in enumerate(tickets_sorted):
+        parts.append(_render_ghsupport_ticket(ticket, expanded=(i == 0)))
+
+    return "".join(parts)
+
+
 def _view_switcher_html(current, week="", pills_html=""):
     items = "".join(
         f'<a href="?view={v}" class="vs-btn{" active" if v == current else ""}">{v.title()}</a>'
@@ -3103,6 +3746,10 @@ def build_page(data, view="dashboard"):
     week = data.get("week", "")
     if view == "slack":
         body = _build_slack_body(data, week)
+    elif view == "email":
+        body = _build_email_body(data, week)
+    elif view == "ghsupport":
+        body = _build_ghsupport_body(data, week)
     elif view == "classic":
         body = _build_classic_body(data, week)
     elif view == "goalie":
@@ -4316,6 +4963,83 @@ def apply_slack_convert(body):
     return added
 
 
+# ---------------------------------------------------------------------------
+# Email triage snapshot / dismiss / convert
+# ---------------------------------------------------------------------------
+
+def load_email_snapshot():
+    if not EMAIL_SNAPSHOT_FILE.exists():
+        return None
+    try:
+        data = json.loads(EMAIL_SNAPSHOT_FILE.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        _log_request(f"WARN email-triage.json malformed: {e}")
+        return {"_error": "malformed"}
+    if data.get("version") != EMAIL_SNAPSHOT_VERSION:
+        return {"_error": "version", "got": data.get("version")}
+    return data
+
+
+def load_email_dismissed():
+    out = set()
+    for rec in load_slack_log(EMAIL_DISMISSED_FILE, ttl_days=EMAIL_DISMISS_TTL_DAYS):
+        rid = rec.get("id")
+        if isinstance(rid, str) and rid:
+            out.add(rid)
+    return out
+
+
+def load_email_converted():
+    out = set()
+    for rec in load_slack_log(EMAIL_CONVERTED_FILE):
+        rid = rec.get("id")
+        if isinstance(rid, str) and rid:
+            out.add(rid)
+    return out
+
+
+def apply_email_dismiss(item_id):
+    if not isinstance(item_id, str) or not item_id:
+        return False
+    record = {"id": item_id, "ts": _now_iso()}
+    with _email_lock:
+        _append_slack_log(EMAIL_DISMISSED_FILE, record)
+        _maybe_compact_slack_log(EMAIL_DISMISSED_FILE, ttl_days=EMAIL_DISMISS_TTL_DAYS)
+    _bump_state_version()
+    return {"ok": True}
+
+
+def apply_email_convert(body):
+    item_id = body.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        return False
+    added = apply_add(body)
+    if not added:
+        return False
+    record = {"id": item_id, "ts": _now_iso()}
+    with _email_lock:
+        _append_slack_log(EMAIL_CONVERTED_FILE, record)
+    _bump_state_version()
+    return added
+
+
+# ---------------------------------------------------------------------------
+# GH Support triage snapshot (read-only view)
+# ---------------------------------------------------------------------------
+
+def load_ghsupport_snapshot():
+    if not GH_SUPPORT_SNAPSHOT_FILE.exists():
+        return None
+    try:
+        data = json.loads(GH_SUPPORT_SNAPSHOT_FILE.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        _log_request(f"WARN gh-support-triage.json malformed: {e}")
+        return {"_error": "malformed"}
+    if data.get("version") != GH_SUPPORT_SNAPSHOT_VERSION:
+        return {"_error": "version", "got": data.get("version")}
+    return data
+
+
 def apply_add(task_data):
     """Add a new task to JSON and core file."""
     data = _load_state()
@@ -4451,8 +5175,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             slack_t = _safe_mtime(SLACK_SNAPSHOT_FILE)
             slack_d = _safe_mtime(SLACK_DISMISSED_FILE)
             slack_c = _safe_mtime(SLACK_CONVERTED_FILE)
+            email_t = _safe_mtime(EMAIL_SNAPSHOT_FILE)
+            email_d = _safe_mtime(EMAIL_DISMISSED_FILE)
+            email_c = _safe_mtime(EMAIL_CONVERTED_FILE)
+            ghs_t   = _safe_mtime(GH_SUPPORT_SNAPSHOT_FILE)
             combined_mtime = max(json_mtime, src_mtime, core_mtime,
-                                 slack_t, slack_d, slack_c)
+                                 slack_t, slack_d, slack_c,
+                                 email_t, email_d, email_c, ghs_t)
             etag = f'"{combined_mtime:.6f}-{view}"'
             last_modified = email.utils.formatdate(int(combined_mtime), usegmt=True)
         except Exception:
@@ -4511,6 +5240,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         "/slack/dismiss": lambda b: apply_slack_dismiss(
             b.get("id"), scope=(b.get("scope") or "message")),
         "/slack/convert": lambda b: apply_slack_convert(b),
+        "/email/dismiss": lambda b: apply_email_dismiss(b.get("id")),
+        "/email/convert": lambda b: apply_email_convert(b),
     }
 
     def do_POST(self):

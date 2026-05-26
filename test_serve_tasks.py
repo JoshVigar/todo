@@ -2383,3 +2383,304 @@ class TestGoalieView:
         })
         html = st.build_page(data, view="goalie")
         assert "Core high task" not in html
+
+
+# ---------------------------------------------------------------------------
+# Email view tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def email_state(tmp_path, monkeypatch):
+    triage = tmp_path / "email-triage.json"
+    dismissed = tmp_path / "email-dismissed.jsonl"
+    converted = tmp_path / "email-converted.jsonl"
+    monkeypatch.setattr(st, "EMAIL_SNAPSHOT_FILE", triage)
+    monkeypatch.setattr(st, "EMAIL_DISMISSED_FILE", dismissed)
+    monkeypatch.setattr(st, "EMAIL_CONVERTED_FILE", converted)
+    return {"triage": triage, "dismissed": dismissed, "converted": converted}
+
+
+def _email_snapshot(items=None, version=1):
+    return {
+        "version": version,
+        "generated_at": "2026-05-22T10:30:00+01:00",
+        "items": items or [],
+        "summary": {"total_fetched": 10, "filtered_noise": 5, "gh_support_threads": 1},
+    }
+
+
+def _email_item(email_id="e1", category="general", tier="action_needed",
+                sender="Alice", subject="Test subject", snippet="Test snippet"):
+    return {
+        "email_id": email_id,
+        "thread_id": email_id,
+        "category": category,
+        "tier": tier,
+        "sender": sender,
+        "sender_email": f"{sender.lower()}@spotify.com",
+        "subject": subject,
+        "snippet": snippet,
+        "ts": "2026-05-22T10:00:00+01:00",
+        "link": f"https://mail.google.com/mail/u/0/#inbox/{email_id}",
+    }
+
+
+def test_email_view_renders_sections(data, email_state):
+    email_state["triage"].write_text(json.dumps(_email_snapshot(items=[
+        _email_item(email_id="e1", category="gh_support", tier="action_needed",
+                    sender="GitHub Support", subject="Ticket update"),
+        _email_item(email_id="e2", tier="action_needed", sender="Bob",
+                    subject="Need review"),
+        _email_item(email_id="e3", tier="fyi", sender="Carol",
+                    subject="FYI: new release"),
+        _email_item(email_id="e4", tier="already_handled", sender="Dave",
+                    subject="PR merged"),
+    ])))
+    html = st.build_page(data, view="email")
+    assert "GH Support Tickets" in html
+    assert "Action Needed" in html
+    assert "FYI" in html
+    assert "Already Handled" in html
+    assert "GitHub Support" in html
+    assert "Bob" in html
+    assert "email-section collapsed" in html
+
+
+def test_email_view_empty_when_no_snapshot(data, email_state):
+    assert not email_state["triage"].exists()
+    html = st.build_page(data, view="email")
+    assert "No email snapshot yet" in html
+    assert "/email" in html
+    assert "<!DOCTYPE html>" in html
+
+
+def test_email_view_empty_when_malformed(data, email_state):
+    email_state["triage"].write_text("not json {{")
+    html = st.build_page(data, view="email")
+    assert "unreadable" in html.lower()
+    assert "<!DOCTYPE html>" in html
+
+
+def test_email_view_rejects_unknown_version(data, email_state):
+    snap = _email_snapshot(items=[], version=99)
+    email_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="email")
+    assert "version not supported" in html.lower()
+
+
+def test_email_dismiss_records_and_filters(data, email_state):
+    email_state["triage"].write_text(json.dumps(_email_snapshot(items=[
+        _email_item(email_id="e1"),
+        _email_item(email_id="e2"),
+    ])))
+    result = st.apply_email_dismiss("e1")
+    assert result == {"ok": True}
+    assert email_state["dismissed"].exists()
+    records = _read_jsonl(email_state["dismissed"])
+    assert any(r["id"] == "e1" for r in records)
+    dismissed = st.load_email_dismissed()
+    assert "e1" in dismissed
+    assert "e2" not in dismissed
+
+
+def test_email_convert_creates_task(data, email_state, isolated_state):
+    email_state["triage"].write_text(json.dumps(_email_snapshot(items=[
+        _email_item(email_id="e1"),
+    ])))
+    result = st.apply_email_convert({
+        "id": "e1",
+        "task": "Reply to Alice: Test subject",
+        "pri": "P2",
+        "due": "—",
+        "why": "Test snippet",
+        "link_label": "Email",
+        "link_url": "https://mail.google.com/mail/u/0/#inbox/e1",
+    })
+    assert result
+    converted = st.load_email_converted()
+    assert "e1" in converted
+
+
+def test_email_convert_failure_does_not_record(data, email_state, isolated_state):
+    result = st.apply_email_convert({"id": "e1", "task": ""})
+    assert result is False
+    assert not email_state["converted"].exists()
+
+
+def test_email_view_filters_dismissed_and_converted(data, email_state):
+    email_state["triage"].write_text(json.dumps(_email_snapshot(items=[
+        _email_item(email_id="e1", sender="Visible"),
+        _email_item(email_id="e2", sender="Dismissed"),
+        _email_item(email_id="e3", sender="Converted"),
+    ])))
+    email_state["dismissed"].write_text('{"id": "e2", "ts": "2026-05-22T10:00:00+01:00"}\n')
+    email_state["converted"].write_text('{"id": "e3", "ts": "2026-05-22T10:00:00+01:00"}\n')
+    html = st._build_email_body(data, "W21")
+    assert "Visible" in html
+    assert "Dismissed" not in html
+    assert "Converted" not in html
+
+
+def test_email_view_embeds_items_data(data, email_state):
+    email_state["triage"].write_text(json.dumps(_email_snapshot(items=[
+        _email_item(email_id="e1"),
+    ])))
+    html = st._build_email_body(data, "W21")
+    assert 'id="email-items-data"' in html
+
+
+def test_email_view_in_view_switcher(data, email_state):
+    email_state["triage"].write_text(json.dumps(_email_snapshot()))
+    html = st.build_page(data, view="email")
+    assert '?view=email' in html
+
+
+def test_email_modal_save_routes_to_convert_endpoint(data, email_state):
+    html = st.build_page(data, view="email")
+    assert "email-convert" in html or "email/convert" in st.JS
+
+
+def test_email_dismiss_rejects_bad_input():
+    assert st.apply_email_dismiss("") is False
+    assert st.apply_email_dismiss(None) is False
+    assert st.apply_email_dismiss(123) is False
+
+
+def test_email_stale_badge(data, email_state):
+    snap = _email_snapshot()
+    snap["generated_at"] = "2026-05-20T10:00:00+01:00"
+    email_state["triage"].write_text(json.dumps(snap))
+    html = st._build_email_body(data, "W21")
+    assert "email-stale" in html
+
+
+# ---------------------------------------------------------------------------
+# GH Support view tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def ghsupport_state(tmp_path, monkeypatch):
+    triage = tmp_path / "gh-support-triage.json"
+    monkeypatch.setattr(st, "GH_SUPPORT_SNAPSHOT_FILE", triage)
+    return {"triage": triage}
+
+
+def _ghsupport_snapshot(tickets=None, version=1):
+    return {
+        "version": version,
+        "generated_at": "2026-05-22T10:30:00+01:00",
+        "tickets": tickets or [],
+    }
+
+
+def _ghsupport_ticket(ticket_id="4338773", subject="IdP issues",
+                       waiting_on="us", message_count=3):
+    return {
+        "ticket_id": ticket_id,
+        "ticket_url": f"https://support.github.com/ticket/{ticket_id}",
+        "ticket_code": "TEST-CODE",
+        "subject": subject,
+        "category": "General support request",
+        "raised_by": "Ellie Kelsch",
+        "raised_at": "2026-04-29T09:34:00+01:00",
+        "last_update": "2026-05-05T17:44:45+01:00",
+        "waiting_on": waiting_on,
+        "message_count": message_count,
+        "messages": [
+            {"author": "Ellie Kelsch", "ts": "2026-04-29T09:34:00+01:00",
+             "is_support": False, "content": "Hello, we have an issue with IdP groups."},
+            {"author": "James", "ts": "2026-04-29T15:27:00+01:00",
+             "is_support": True, "content": "Hi Ellie, I'll look into this."},
+            {"author": "James", "ts": "2026-05-05T16:44:00+01:00",
+             "is_support": True, "content": "Just a quick update, could you try..."},
+        ],
+        "gmail_link": "https://mail.google.com/mail/u/0/#inbox/test123",
+    }
+
+
+def test_ghsupport_view_renders_tickets(data, ghsupport_state):
+    ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[
+        _ghsupport_ticket(ticket_id="4338773", subject="IdP issues", waiting_on="us"),
+        _ghsupport_ticket(ticket_id="4342259", subject="GHES latency", waiting_on="github"),
+    ])))
+    html = st.build_page(data, view="ghsupport")
+    assert "#4338773" in html
+    assert "#4342259" in html
+    assert "IdP issues" in html
+    assert "GHES latency" in html
+    assert "Waiting on us" in html
+    assert "Waiting on GitHub" in html
+
+
+def test_ghsupport_view_empty_when_no_snapshot(data, ghsupport_state):
+    assert not ghsupport_state["triage"].exists()
+    html = st.build_page(data, view="ghsupport")
+    assert "No GH Support data yet" in html
+    assert "<!DOCTYPE html>" in html
+
+
+def test_ghsupport_view_empty_when_malformed(data, ghsupport_state):
+    ghsupport_state["triage"].write_text("bad json")
+    html = st.build_page(data, view="ghsupport")
+    assert "unreadable" in html.lower()
+
+
+def test_ghsupport_view_rejects_unknown_version(data, ghsupport_state):
+    snap = _ghsupport_snapshot(version=99)
+    ghsupport_state["triage"].write_text(json.dumps(snap))
+    html = st.build_page(data, view="ghsupport")
+    assert "version not supported" in html.lower()
+
+
+def test_ghsupport_view_renders_conversation(data, ghsupport_state):
+    ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[
+        _ghsupport_ticket(),
+    ])))
+    html = st.build_page(data, view="ghsupport")
+    assert "Ellie Kelsch" in html
+    assert "James" in html
+    assert "ghsupport-author support" in html
+    assert "ghsupport-author spotify" in html
+
+
+def test_ghsupport_view_first_ticket_expanded(data, ghsupport_state):
+    ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[
+        _ghsupport_ticket(ticket_id="111"),
+        _ghsupport_ticket(ticket_id="222"),
+    ])))
+    html = st.build_page(data, view="ghsupport")
+    assert 'data-ticket="111"' in html
+    assert 'data-ticket="222"' in html
+    import re as _re
+    ticket_111 = _re.search(r'data-ticket="111"[^>]*>', html)
+    ticket_222 = _re.search(r'data-ticket="222"[^>]*>', html)
+    assert ticket_111 and "collapsed" not in html[ticket_111.start()-50:ticket_111.end()]
+    assert ticket_222 and "collapsed" in html[ticket_222.start()-50:ticket_222.end()]
+
+
+def test_ghsupport_no_tickets_placeholder(data, ghsupport_state):
+    ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[])))
+    html = st.build_page(data, view="ghsupport")
+    assert "No tracked tickets" in html
+
+
+def test_ghsupport_view_has_portal_and_gmail_links(data, ghsupport_state):
+    ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[
+        _ghsupport_ticket(),
+    ])))
+    html = st.build_page(data, view="ghsupport")
+    assert "support.github.com/ticket/4338773" in html
+    assert "mail.google.com" in html
+    assert "Support Portal" in html
+    assert "Gmail" in html
+
+
+def test_ghsupport_view_in_view_switcher(data, ghsupport_state):
+    ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot()))
+    html = st.build_page(data, view="ghsupport")
+    assert '?view=ghsupport' in html
+
+
+def test_email_and_ghsupport_in_views_list():
+    assert "email" in st.VIEWS
+    assert "ghsupport" in st.VIEWS

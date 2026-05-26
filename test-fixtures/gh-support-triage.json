@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "generated_at": "2026-05-22T10:30:00+01:00",
+  "tickets": [
+    {
+      "ticket_id": "4356033",
+      "ticket_url": "https://support.github.com/ticket/4356033",
+      "ticket_code": "NZ5VG5-N3907",
+      "subject": "Patch upgrading production 3.19.5",
+      "category": "General support request",
+      "raised_by": "Ellie Kelsch",
+      "raised_at": "2026-05-05T12:49:00+01:00",
+      "last_update": "2026-05-05T23:09:45+01:00",
+      "waiting_on": "us",
+      "message_count": 2,
+      "messages": [
+        {
+          "author": "Ellie Kelsch",
+          "ts": "2026-05-05T12:49:00+01:00",
+          "is_support": false,
+          "content": "**Server installation**: `ghe.spotify.net` (32416)\n**Release**: 3.19\n\nWe will be patch upgrading production to 3.19.5 tomorrow (May 6th) at 6am UTC. I will send support bundles from production first thing in the morning before upgrading and after upgrading."
+        },
+        {
+          "author": "Scott C.",
+          "ts": "2026-05-05T22:09:00+00:00",
+          "is_support": true,
+          "content": "Hello Ellie,\n\nThank you for the notification. I have noted your upgrade time in our internal calendar.\n\nIn the hopefully unlikely event you run into issues with your upgrade, please escalate this ticket to page the on call Support Engineer for assistance.\n\nHave a great day,\nScott C.\nCustomer Support Engineer\nGitHub Support North America"
+        }
+      ],
+      "gmail_link": "https://mail.google.com/mail/u/0/#inbox/19dfa30aa61a4fed"
+    },
+    {
+      "ticket_id": "4338773",
+      "ticket_url": "https://support.github.com/ticket/4338773",
+      "ticket_code": "1JGR9Z-6JLZD",
+      "subject": "Ongoing IdP issues related to 4061807",
+      "category": "General support request",
+      "raised_by": "Ellie Kelsch",
+      "raised_at": "2026-04-29T09:34:00+01:00",
+      "last_update": "2026-05-05T17:44:45+01:00",
+      "waiting_on": "us",
+      "message_count": 11,
+      "messages": [
+        {
+          "author": "Ellie Kelsch",
+          "ts": "2026-04-29T09:34:00+01:00",
+          "is_support": false,
+          "content": "Hello! So I ran the script that James suggested in the previous ticket: https://support.github.com/ticket/personal/0/4321305 (sorry was raised under GHES account). However we are now seeing issues with IdP groups being \"disabled\" since running these commands. We have a manual workaround of deleting the push group in Okta (but keeping the group in the target app) and then recreating the push group manually but this is not scalable if this issue is affecting all groups, which is roughly 800. Is there any other options here?\n\nAlso I would love if this ticket could be assigned back to James as this was a long standing issue that he has all of the context on. Thanks!\nEllie"
+        },
+        {
+          "author": "Ellie Kelsch",
+          "ts": "2026-04-29T09:34:00+01:00",
+          "is_support": false,
+          "content": "For additional impact context, this is causing previously synced to teams to lose access to GHEC-DR which is very disruptive for those teams at the moment."
+        },
+        {
+          "author": "Ellie Kelsch",
+          "ts": "2026-04-29T09:39:00+01:00",
+          "is_support": false,
+          "content": "Sorry I linked the wrong previous ticket, it's here: https://support.github.com/ticket/enterprise/669/4061807"
+        },
+        {
+          "author": "GitHub Support (Will)",
+          "ts": "2026-04-29T13:29:00+01:00",
+          "is_support": true,
+          "content": "Hi,\n\nThanks for writing in. We're currently going over the history and reviewing the ticket. We'll provide next steps shortly.\n\nRegards,\nWill"
+        },
+        {
+          "author": "James",
+          "ts": "2026-04-29T15:27:00+01:00",
+          "is_support": true,
+          "content": "Hi Ellie,\n\nThanks for reaching out and sorry to hear you are facing problems here!\n\nI'm just getting to speed on this ticket and I've grabbed it back for now to continue working on it.\n\nWould it be possible to confirm if you are seeing the disabled groups within Okta in this case?\n\nWould it be possible to supply an example IdP group and I'll take a look from my side.\n\nPlease let me know if you have any questions and I'll be happy to help!\n\nKind regards,\nJames"
+        },
+        {
+          "author": "Ellie Kelsch",
+          "ts": "2026-04-30T10:09:00+01:00",
+          "is_support": false,
+          "content": "Hey James! Yes I can see the disabled groups in Okta. Here's some examples of (previously) affected groups that I've had to manually recreate the push groups for to enable the IdP syncing:\n\n- manifesto\n- starflock-backstage-external\n- temp-access-backstage-external\n- ai-fleet-management-backstage-external\n- ai-fm-backstage-external\n\nI can try and find some existing groups that are currently disabled and unresolved.\n\nSorry it's hard to check because some of the groups I deleted via SCIM haven't been linked to GitHub teams yet so they aren't affected."
+        },
+        {
+          "author": "Ellie Kelsch",
+          "ts": "2026-04-30T10:10:00+01:00",
+          "is_support": false,
+          "content": "Is there a way to query all disabled IdPs?"
+        },
+        {
+          "author": "James",
+          "ts": "2026-04-30T16:05:00+01:00",
+          "is_support": true,
+          "content": "Hi Ellie,\n\nThanks for getting back to me and supplying a few example groups. I'm just digging in to this further my end and I'll update you with my findings shortly!\n\nPlease let me know if you have any questions in the meantime and I'll be happy to help.\n\nKind regards,\nJames"
+        },
+        {
+          "author": "Ellie Kelsch",
+          "ts": "2026-05-05T11:23:00+01:00",
+          "is_support": false,
+          "content": "Hi James,\n\nThank you so much! Any updates on this?\n\nJust to clarify I can't tell if there are any more groups affected or if it was only groups that were already linked via an IdP to an existing GitHub team (in which case, there may be no more).\n\nEllie"
+        },
+        {
+          "author": "James",
+          "ts": "2026-05-05T15:33:00+01:00",
+          "is_support": true,
+          "content": "Hi Ellie,\n\nThat's no problem at all! Thanks for getting back to me and my apology for the delay in getting back to you on this.\n\nI'm still working through the logs we have and looking into this on my side, I hope to be finished by the latest tomorrow and will send you over my findings as soon as possible.\n\nI'll keep you updated with my progress and here if you have any questions in the meantime but will update you shortly.\n\nKind regards,\nJames"
+        },
+        {
+          "author": "James",
+          "ts": "2026-05-05T16:44:00+01:00",
+          "is_support": true,
+          "content": "Hi Ellie,\n\nJust a quick update, if you could try and find just one example of the following that would be great:\n\n> I can try and find some existing groups that are currently disabled and unresolved.\n\nAlso, regarding your question before:\n\n> Is there a way to query all disabled IdPs?\n\nThere isn't from our end in this case unfortunately, I wonder if that's something that can be seen from Okta's side?\n\nI'm in the process of exporting the audit log to filter for to confirm recovery of the group:\n- `external_group.scim_api_failure`\n- `external_group.scim_api_success`\n\nPlease let me know if you have any further questions and I'll be happy to help.\n\nKind regards,\nJames"
+        }
+      ],
+      "gmail_link": "https://mail.google.com/mail/u/0/#inbox/19df90729a9a013b"
+    },
+    {
+      "ticket_id": "4342259",
+      "ticket_url": "https://support.github.com/ticket/4342259",
+      "ticket_code": "NZRE2E-9PE25",
+      "subject": "GHES latency with unknown causes",
+      "category": "GitHub Enterprise Server Administration",
+      "raised_by": "Léo",
+      "raised_at": "2026-04-30T09:40:00+01:00",
+      "last_update": "2026-04-30T18:27:36+01:00",
+      "waiting_on": "us",
+      "message_count": 3,
+      "messages": [
+        {
+          "author": "Léo",
+          "ts": "2026-04-30T09:40:00+01:00",
+          "is_support": false,
+          "content": "**Server installation**: `ghe.spotify.net` (32416)\n**Release**: 3.19\n\nHello,\n\nSince yesterday afternoon (12pm to 5pm) we've seen very high latency, with saturated unicorn workers. Our mergeability checks are experience extremely high latency too (> 15min to compute mergeability on some PRs).\n\nWe have an opened incident on our side to mitigate and try to figure it out. We've already started with some mitigations:\n- we've noticed one of our integrations is hitting the LFS endpoints more than usual\n- we've noticed an integration doing a very high volume of GET installations calls\n\nHowever we're not 100% this is the cause, and we'd like help diagnosing it.\n\nI will upload a bundle to this ticket ASAP"
+        },
+        {
+          "author": "Olliec",
+          "ts": "2026-04-30T14:40:00+01:00",
+          "is_support": true,
+          "content": "Hi Léo,\n\nThanks for sharing a bundle and details. We will review and share our findings.\n\nIn the meantime let us know if you have any additional questions.\n\nCheers,\nOlliec"
+        },
+        {
+          "author": "Olliec",
+          "ts": "2026-04-30T17:27:00+01:00",
+          "is_support": true,
+          "content": "Hi Léo,\n\nThanks for the bundle. Based on the data, the latency window was driven by a mergeability storm centered on `spotify/services-pilot`, which saturated Unicorn and cascaded into long PR mergeability times.\n\nDuring 14:01–15:00 UTC on Apr 29, we can see:\n- `spotify-ci[bot]` as the top REST API consumer with ~55k requests over ~3 hours of worker time\n- `fleet-manager-bot` as the top GraphQL consumer with ~25k requests over ~7 hours of worker time\n- `auto_merge_job` running ~7,581 times in a single hour on this repo\n- Merge-tree parallelism peaking at 36 concurrent operations, with average parallelism around 14\n\nThat execution profile is characteristic of \"base-branch fan-out\", where frequent pushes to the base branch trigger mergeability re-computation across a large set of open PRs.\n\nAt this point, the most useful confirmation from your side is:\n1) Which of these automations (`spotify-ci[bot]`, `fleet-manager-bot`, or merge-queue related jobs) is pushing to the base branch of `spotify/services-pilot` during peak hours.\n2) Roughly how many open PRs that repository typically has during normal operation.\n\nThose two data points will help confirm the fan-out mechanics and guide whether the most effective mitigation is reducing base-branch push frequency, adjusting merge automation behavior, or managing open PR volume during peak windows.\n\nIn the meantime, the fastest stabilizing action if this pattern reappears is to temporarily slow or pause the automation that is pushing to the base branch on this repo, which should immediately reduce mergeability pressure and bring Unicorn utilization back down.\n\nOnce mitigated, you should see mergeability checks return to normal completion times and Unicorn utilization drop back to baseline.\n\nLet us know if this helps.\n\nCheers,\nOlliec"
+        }
+      ],
+      "gmail_link": "https://mail.google.com/mail/u/0/#inbox/19ddf6e9320eba23"
+    }
+  ]
+}
