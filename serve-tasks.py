@@ -243,6 +243,7 @@ def _state_signature():
 
 
 _sse_clients = 0  # active /events stream count; protected by _state_cond
+_server_start_time = time.time()
 
 
 def _bump_state_version():
@@ -1155,6 +1156,28 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
   background: #161b22; padding: 1px 6px; border-radius: 3px;
   font-family: ui-monospace, monospace; font-size: 12px;
 }
+/* ---------- Debug panel ---------- */
+#debug-panel { display: none; margin-top: 12px; padding: 12px; border-top: 1px solid #21262d; }
+#debug-panel.open { display: block; }
+.dbg-status { margin-bottom: 8px; }
+.dbg-row { display: flex; gap: 6px; align-items: center; padding: 3px 0; font-size: 11px; color: #8b949e; flex-wrap: wrap; }
+.dbg-label { color: #6e7681; min-width: 70px; font-weight: 600; }
+.dbg-val { color: #c9d1d9; }
+.dbg-snaps { display: flex; gap: 12px; flex-wrap: wrap; }
+.dbg-snap { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: #8b949e; }
+.dbg-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.dbg-dot.fresh { background: #3fb950; }
+.dbg-dot.stale { background: #d29922; }
+.dbg-dot.very-stale { background: #f0883e; }
+.dbg-dot.missing { background: #f85149; }
+.dbg-diagnostics.collapsed .dbg-diag-body { display: none; }
+.dbg-diag-header { font-size: 11px; color: #6e7681; cursor: pointer; padding: 4px 0; user-select: none; }
+.dbg-diag-header:hover { color: #c9d1d9; }
+.dbg-diag-chevron { font-size: 12px; }
+.dbg-files { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 11px; font-family: ui-monospace, monospace; }
+.dbg-files th { text-align: left; color: #6e7681; font-weight: 600; padding: 2px 8px 2px 0; border-bottom: 1px solid #21262d; }
+.dbg-files td { padding: 2px 8px 2px 0; color: #8b949e; }
+.dbg-path { color: #6e7681; }
 """
 
 def _js_consts():
@@ -1817,6 +1840,14 @@ function _refreshTasks(force) {
   document.querySelectorAll('.slack-section[data-tier]').forEach(function(el) {
     slackSectionState[el.dataset.tier] = el.classList.contains('collapsed');
   });
+  var debugOpen = (function() {
+    var dp = document.getElementById('debug-panel');
+    return dp ? dp.classList.contains('open') : false;
+  })();
+  var diagCollapsed = (function() {
+    var d = document.querySelector('.dbg-diagnostics');
+    return d ? d.classList.contains('collapsed') : true;
+  })();
   // Preserve the current view by including the search string in the fetch URL
   fetch('/' + window.location.search).then(function(r) {
     if (r.status === 304) return null;
@@ -1861,6 +1892,16 @@ function _refreshTasks(force) {
           if (btn) btn.textContent = '▴';
         }
       });
+      if (debugOpen) {
+        var dp = document.getElementById('debug-panel');
+        if (dp) dp.classList.add('open');
+      }
+      var diag = document.querySelector('.dbg-diagnostics');
+      if (diag && !diagCollapsed) {
+        diag.classList.remove('collapsed');
+        var chev = diag.querySelector('.dbg-diag-chevron');
+        if (chev) chev.textContent = '▾';
+      }
       // Re-apply keyboard-nav highlight if it survived the swap
       if (_hilitId != null) _setHighlight(_hilitId);
       // Preserve the active filter across refreshes
@@ -2079,6 +2120,12 @@ document.addEventListener('keydown', function(e) {
   }
 
   // Single-letter / arrow hotkeys
+  if (e.key === '`' && !inInput) {
+    e.preventDefault();
+    var dp = document.getElementById('debug-panel');
+    if (dp) dp.classList.toggle('open');
+    return;
+  }
   if (e.key === 'x') { e.preventDefault(); _toggleExpandAll(); return; }
   if (e.key === 'r') { e.preventDefault(); _refreshTasks(true); return; }
   if (e.key === 's') { e.preventDefault(); _post('/sort', {}); return; }
@@ -2211,6 +2258,26 @@ document.addEventListener('click', function(e) {
     if (id) _post('/slack/dismiss', {id: id}).then(function(r) {
       if (r.ok) drow.remove();
     });
+    return;
+  }
+  // Debug panel toggle — "Updated ..." timestamp click
+  var dbgToggle = e.target.closest('.debug-toggle');
+  if (dbgToggle) {
+    e.preventDefault();
+    var dp = document.getElementById('debug-panel');
+    if (dp) dp.classList.toggle('open');
+    return;
+  }
+  var diagToggle = e.target.closest('[data-action="toggle-diagnostics"]');
+  if (diagToggle) {
+    e.preventDefault();
+    e.stopPropagation();
+    var diag = diagToggle.closest('.dbg-diagnostics');
+    if (diag) {
+      diag.classList.toggle('collapsed');
+      var chev = diag.querySelector('.dbg-diag-chevron');
+      if (chev) chev.textContent = diag.classList.contains('collapsed') ? '▸' : '▾';
+    }
     return;
   }
   // Goalie section chevron → toggle the whole section body.
@@ -2968,6 +3035,190 @@ def render_compact_completed(tasks, week=""):
 
 VIEWS = ["dashboard", "classic", "goalie", "slack", "email", "ghsupport"]
 
+
+# ---------------------------------------------------------------------------
+# Debug panel
+# ---------------------------------------------------------------------------
+
+def _file_stat(path):
+    """Return (exists, size_str, mtime_str, staleness_class) for a file."""
+    try:
+        stat_result = os.stat(path)
+    except OSError:
+        return (False, "—", "—", "missing")
+    size = stat_result.st_size
+    if size < 1024:
+        size_str = f"{size} B"
+    elif size < 1024 * 1024:
+        size_str = f"{size / 1024:.1f} KB"
+    else:
+        size_str = f"{size / (1024 * 1024):.1f} MB"
+    mtime = stat_result.st_mtime
+    age = time.time() - mtime
+    mtime_str = time.strftime(
+        "%Y-%m-%d %H:%M:%S", time.localtime(mtime)
+    )
+    if age < 3600:
+        staleness = "fresh"
+    elif age < 86400:
+        staleness = "stale"
+    else:
+        staleness = "very-stale"
+    return (True, size_str, mtime_str, staleness)
+
+
+_DEBUG_FILES = [
+    ("tasks-live.json", JSON_FILE),
+    ("slack-triage.json", SLACK_SNAPSHOT_FILE),
+    ("email-triage.json", EMAIL_SNAPSHOT_FILE),
+    ("gh-support-triage.json", GH_SUPPORT_SNAPSHOT_FILE),
+    ("core file", None),  # resolved at render time
+    ("request log", REQUEST_LOG),
+]
+
+
+def _build_debug_panel(data, view, render_ms=0):
+    """Build the collapsible debug/status panel HTML."""
+    parts = ['<div id="debug-panel">']
+
+    # --- Status section ---
+    parts.append('<div class="dbg-status">')
+
+    # Snapshot freshness dots (first 4 files)
+    parts.append('<div class="dbg-row"><span class="dbg-label">'
+                 'Snapshots</span><span class="dbg-snaps">')
+    for label, path in _DEBUG_FILES[:4]:
+        _, _, _, staleness = _file_stat(path)
+        parts.append(
+            f'<span class="dbg-snap">'
+            f'<span class="dbg-dot {staleness}"></span>'
+            f'{h(label)}</span>'
+        )
+    parts.append('</span></div>')
+
+    # SSE row
+    parts.append(
+        f'<div class="dbg-row">'
+        f'<span class="dbg-label">SSE</span>'
+        f'<span class="dbg-val">{_sse_clients} client'
+        f'{"s" if _sse_clients != 1 else ""}</span>'
+        f'<span class="dbg-val">'
+        f'state version {_state_version}</span>'
+        f'</div>'
+    )
+
+    # Server row
+    uptime_secs = int(time.time() - _server_start_time)
+    if uptime_secs < 60:
+        uptime_str = f"{uptime_secs}s"
+    elif uptime_secs < 3600:
+        uptime_str = f"{uptime_secs // 60}m {uptime_secs % 60}s"
+    else:
+        hrs = uptime_secs // 3600
+        mins = (uptime_secs % 3600) // 60
+        uptime_str = f"{hrs}h {mins}m"
+    auto_restart = "off" if os.environ.get(
+        "SERVE_TASKS_NO_WATCH"
+    ) else "on"
+    parts.append(
+        f'<div class="dbg-row">'
+        f'<span class="dbg-label">Server</span>'
+        f'<span class="dbg-val">port {PORT}</span>'
+        f'<span class="dbg-val">uptime {uptime_str}</span>'
+        f'<span class="dbg-val">'
+        f'auto-restart {auto_restart}</span>'
+        f'</div>'
+    )
+
+    parts.append('</div>')  # close dbg-status
+
+    # --- Diagnostics section (collapsed by default) ---
+    parts.append(
+        '<div class="dbg-diagnostics collapsed">'
+        '<div class="dbg-diag-header" '
+        'data-action="toggle-diagnostics">'
+        '<span class="dbg-diag-chevron">▸</span> '
+        'Diagnostics</div>'
+        '<div class="dbg-diag-body">'
+    )
+
+    # File details table
+    parts.append(
+        '<table class="dbg-files"><thead><tr>'
+        '<th>File</th><th>Size</th><th>Modified</th>'
+        '</tr></thead><tbody>'
+    )
+    for label, path in _DEBUG_FILES:
+        if label == "core file":
+            try:
+                path = current_core_path()
+            except Exception:
+                path = None
+        if path is None:
+            parts.append(
+                f'<tr><td class="dbg-path">{h(label)}'
+                f'</td><td>—</td><td>—</td></tr>'
+            )
+            continue
+        exists, size_str, mtime_str, staleness = _file_stat(path)
+        display_path = str(path).replace(
+            str(Path.home()), "~"
+        )
+        parts.append(
+            f'<tr><td class="dbg-path" title="{h(display_path)}">'
+            f'{h(label)}</td>'
+            f'<td>{h(size_str)}</td>'
+            f'<td>{h(mtime_str)}</td></tr>'
+        )
+    parts.append('</tbody></table>')
+
+    # Request stats
+    last_post = "—"
+    posts_today = 0
+    log_size = "—"
+    try:
+        log_stat = os.stat(REQUEST_LOG)
+        sz = log_stat.st_size
+        if sz < 1024:
+            log_size = f"{sz} B"
+        elif sz < 1024 * 1024:
+            log_size = f"{sz / 1024:.1f} KB"
+        else:
+            log_size = f"{sz / (1024 * 1024):.1f} MB"
+        today_str = time.strftime("%Y-%m-%d")
+        with open(REQUEST_LOG, "r") as f:
+            for line in f:
+                if "POST" in line:
+                    last_post = line.strip()[:50]
+                    if today_str in line:
+                        posts_today += 1
+    except OSError:
+        pass
+    parts.append(
+        f'<div class="dbg-row">'
+        f'<span class="dbg-label">Requests</span>'
+        f'<span class="dbg-val">log {h(log_size)}</span>'
+        f'<span class="dbg-val">last POST: {h(last_post)}</span>'
+        f'<span class="dbg-val">'
+        f'POSTs today: {posts_today}</span>'
+        f'</div>'
+    )
+
+    # Render info
+    parts.append(
+        f'<div class="dbg-row">'
+        f'<span class="dbg-label">Render</span>'
+        f'<span class="dbg-val">view: {h(view)}</span>'
+        f'<span class="dbg-val">'
+        f'render time: {render_ms:.1f} ms</span>'
+        f'</div>'
+    )
+
+    parts.append('</div></div>')  # close dbg-diag-body + dbg-diagnostics
+    parts.append('</div>')  # close debug-panel
+    return "".join(parts)
+
+
 def _build_dashboard_body(data, week):
     parts = []  # counts strip now lives in the topbar (see _view_switcher_html)
 
@@ -3018,7 +3269,7 @@ def _build_dashboard_body(data, week):
         f'</div>'
     )
     if data.get("updated"):
-        parts.append(f'<p class="counts" style="margin-top:16px;color:#484f58">Updated {h(data["updated"])}</p>\n')
+        parts.append(f'<p class="counts debug-toggle" style="margin-top:16px;color:#484f58;cursor:pointer" title="Toggle debug panel (`)">Updated {h(data["updated"])}</p>\n')
     return "".join(parts)
 
 
@@ -3051,7 +3302,7 @@ def _build_classic_body(data, week):
     if completed_html:
         parts.append(card(completed_html))
     if data.get("updated"):
-        parts.append(f'<p class="counts" style="margin-top:16px;color:#484f58">Updated {h(data["updated"])}</p>\n')
+        parts.append(f'<p class="counts debug-toggle" style="margin-top:16px;color:#484f58;cursor:pointer" title="Toggle debug panel (`)">Updated {h(data["updated"])}</p>\n')
     return "".join(parts)
 
 
@@ -3193,7 +3444,7 @@ def _build_goalie_body(data, week):
 
     if data.get("updated"):
         parts.append(
-            f'<p class="counts" style="margin-top:16px;color:#484f58">'
+            f'<p class="counts debug-toggle" style="margin-top:16px;color:#484f58;cursor:pointer" title="Toggle debug panel (`)">'
             f'Updated {h(data["updated"])}</p>\n'
         )
     return "".join(parts)
@@ -3743,6 +3994,7 @@ def _view_switcher_html(current, week="", pills_html=""):
 def build_page(data, view="dashboard"):
     if view not in VIEWS:
         view = "dashboard"
+    t0 = time.perf_counter()
     week = data.get("week", "")
     if view == "slack":
         body = _build_slack_body(data, week)
@@ -3756,13 +4008,15 @@ def build_page(data, view="dashboard"):
         body = _build_goalie_body(data, week)
     else:
         body = _build_dashboard_body(data, week)
+    render_ms = (time.perf_counter() - t0) * 1000
+    debug = _build_debug_panel(data, view, render_ms)
     switcher = _view_switcher_html(view, week, pills_html=render_counts_strip(data))
     return (
         f'<!DOCTYPE html><html><head>'
         f'<meta charset="utf-8">'
         f'<meta name="tasks-view" content="{view}">'
         f'<title>Tasks</title><style>{CSS}</style>'
-        f'</head><body>{switcher}<div id="tasks-content">{body}</div>'
+        f'</head><body>{switcher}<div id="tasks-content">{body}{debug}</div>'
         f'<div id="modal-overlay"><div id="modal" data-mode="add">'
         f'<h3 id="modal-title">Add Task</h3>'
         f'<label>Task name</label>'

@@ -2684,3 +2684,56 @@ def test_ghsupport_view_in_view_switcher(data, ghsupport_state):
 def test_email_and_ghsupport_in_views_list():
     assert "email" in st.VIEWS
     assert "ghsupport" in st.VIEWS
+
+
+# ---------------------------------------------------------------------------
+# Debug panel tests
+# ---------------------------------------------------------------------------
+
+def test_debug_panel_present_in_all_views(data):
+    for view in st.VIEWS:
+        html = st.build_page(data, view=view)
+        assert 'id="debug-panel"' in html, f"debug panel missing in {view}"
+
+
+def test_debug_panel_hidden_by_default(data):
+    html = st.build_page(data, view="dashboard")
+    assert 'id="debug-panel"' in html
+    assert 'debug-panel open' not in html
+
+
+def test_debug_panel_contains_snapshot_freshness(data):
+    html = st.build_page(data, view="dashboard")
+    assert "tasks-live.json" in html
+    assert "slack-triage.json" in html
+    assert "email-triage.json" in html
+    assert "gh-support-triage.json" in html
+
+
+def test_debug_panel_contains_sse_info(data):
+    html = st.build_page(data, view="dashboard")
+    assert "SSE" in html or "sse" in html
+    assert "state version" in html.lower() or "state-version" in html.lower()
+
+
+def test_debug_panel_contains_server_info(data):
+    html = st.build_page(data, view="dashboard")
+    panel = html[html.index('id="debug-panel"'):]
+    assert str(st.PORT) in panel
+    assert "uptime" in panel.lower()
+
+
+def test_debug_panel_contains_render_time(data):
+    html = st.build_page(data, view="dashboard")
+    assert "render" in html.lower()
+    assert "ms" in html
+
+
+def test_debug_panel_toggle_hotkey_wired(data):
+    html = st.build_page(data, view="dashboard")
+    assert "e.key === '`'" in html or 'e.key === "`"' in html
+
+
+def test_debug_panel_click_toggle_wired(data):
+    html = st.build_page(data, view="dashboard")
+    assert "debug-toggle" in html
