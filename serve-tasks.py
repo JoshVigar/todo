@@ -70,6 +70,8 @@ EMAIL_DISMISS_TTL_DAYS  = 14
 
 GH_SUPPORT_SNAPSHOT_FILE    = Path.home() / "todo" / "gh-support-triage.json"
 GH_SUPPORT_SNAPSHOT_VERSION = 1
+GH_SUPPORT_DISMISSED_FILE   = Path.home() / "todo" / "ghsupport-dismissed.jsonl"
+GH_SUPPORT_DISMISS_TTL_DAYS = 14
 
 
 _LOG_MAX_BYTES = 1_000_000  # ~1MB, then truncate to last half
@@ -151,6 +153,8 @@ _state_lock = threading.Lock()
 _slack_lock = threading.Lock()
 
 _email_lock = threading.Lock()
+
+_ghsupport_lock = threading.Lock()
 
 
 def _safe_mtime(path):
@@ -238,8 +242,9 @@ def _state_signature():
     email_d = _safe_mtime(EMAIL_DISMISSED_FILE)
     email_c = _safe_mtime(EMAIL_CONVERTED_FILE)
     ghs_t   = _safe_mtime(GH_SUPPORT_SNAPSHOT_FILE)
+    ghs_d = _safe_mtime(GH_SUPPORT_DISMISSED_FILE)
     return (json_m, src_m, core_m, slack_t, slack_d, slack_c,
-            email_t, email_d, email_c, ghs_t)
+            email_t, email_d, email_c, ghs_t, ghs_d)
 
 
 _sse_clients = 0  # active /events stream count; protected by _state_cond
@@ -1156,6 +1161,34 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
   background: #161b22; padding: 1px 6px; border-radius: 3px;
   font-family: ui-monospace, monospace; font-size: 12px;
 }
+.ghsupport-dismiss {
+  color: #6e7681; cursor: pointer; font-size: 11px; padding: 2px 6px;
+  border: 1px solid transparent; border-radius: 4px;
+}
+.ghsupport-dismiss:hover { color: #f85149; border-color: #f8514966; }
+.ghsupport-tracked {
+  background: rgba(63, 185, 80, 0.15); color: #3fb950;
+  font-size: 10px; padding: 1px 6px; border-radius: 10px;
+  font-weight: 600; white-space: nowrap;
+}
+.ghsupport-dismissed-section { margin-top: 16px; }
+.ghsupport-dismissed-header {
+  color: #8b949e; font-size: 12px; padding: 8px 12px;
+  cursor: pointer; display: flex; align-items: center; gap: 6px;
+}
+.ghsupport-dismissed-header:hover { color: #c9d1d9; }
+.ghsupport-dismissed-list { display: none; }
+.ghsupport-dismissed-section.expanded .ghsupport-dismissed-list { display: block; }
+.ghsupport-dismissed-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 12px;
+  font-size: 12px; color: #8b949e;
+}
+.ghsupport-dismissed-row:hover { background: #161b22; border-radius: 4px; }
+.ghsupport-restore {
+  color: #6e7681; cursor: pointer; font-size: 11px; padding: 2px 6px;
+  border: 1px solid transparent; border-radius: 4px;
+}
+.ghsupport-restore:hover { color: #3fb950; border-color: #3fb95066; }
 /* ---------- Debug panel ---------- */
 #debug-panel { display: none; margin-top: 12px; padding: 12px; border-top: 1px solid #21262d; }
 #debug-panel.open { display: block; }
@@ -2388,6 +2421,47 @@ document.addEventListener('click', function(e) {
       ticket.classList.toggle('collapsed');
       var chev = ticket.querySelector('.ghsupport-chevron');
       if (chev) chev.textContent = ticket.classList.contains('collapsed') ? '▸' : '▾';
+    }
+    return;
+  }
+  // GH Support dismiss button
+  var ghDismiss = e.target.closest('[data-action="ghsupport-dismiss"]');
+  if (ghDismiss) {
+    e.preventDefault();
+    e.stopPropagation();
+    var ticketId = ghDismiss.dataset.ticketId;
+    if (ticketId) _post('/ghsupport/dismiss', {id: ticketId}).then(function(r) {
+      if (r.ok) {
+        var card = ghDismiss.closest('.ghsupport-ticket');
+        if (card) card.remove();
+      }
+    });
+    return;
+  }
+  // GH Support restore button
+  var ghRestore = e.target.closest('[data-action="ghsupport-restore"]');
+  if (ghRestore) {
+    e.preventDefault();
+    e.stopPropagation();
+    var rTicketId = ghRestore.dataset.ticketId;
+    if (rTicketId) _post('/ghsupport/restore', {id: rTicketId}).then(function(r) {
+      if (r.ok) {
+        var row = ghRestore.closest('.ghsupport-dismissed-row');
+        if (row) row.remove();
+      }
+    });
+    return;
+  }
+  // GH Support dismissed section toggle
+  var ghDismissedToggle = e.target.closest('[data-action="toggle-dismissed"]');
+  if (ghDismissedToggle) {
+    e.preventDefault();
+    e.stopPropagation();
+    var sec = ghDismissedToggle.closest('.ghsupport-dismissed-section');
+    if (sec) {
+      sec.classList.toggle('expanded');
+      var ch = sec.querySelector('.ghsupport-dismissed-header .ghsupport-chevron');
+      if (ch) ch.textContent = sec.classList.contains('expanded') ? '▾' : '▸';
     }
     return;
   }
@@ -3689,18 +3763,11 @@ def _build_email_body(data, week):
     )
     parts.append(header)
 
-    gh_support = [it for it in visible if it.get("category") == "gh_support"]
-    general = [it for it in visible if it.get("category") != "gh_support"]
+    general = visible
     by_tier = {"action_needed": [], "fyi": [], "already_handled": []}
     for it in general:
         tier = it.get("tier") or "fyi"
         by_tier.setdefault(tier, []).append(it)
-
-    if gh_support:
-        parts.append(_render_email_section(
-            "GH Support Tickets", gh_support,
-            color="#bc8cff", collapsed=False,
-        ))
 
     parts.append(_render_email_section(
         EMAIL_TIER_LABEL["action_needed"], by_tier["action_needed"],
@@ -3836,7 +3903,7 @@ def _render_ghsupport_message(msg):
     )
 
 
-def _render_ghsupport_ticket(ticket, expanded=False):
+def _render_ghsupport_ticket(ticket, expanded=False, dismissed=False):
     tid = ticket.get("ticket_id") or "?"
     ticket_url = ticket.get("ticket_url") or f"https://support.github.com/ticket/{tid}"
     subject = ticket.get("subject") or "(no subject)"
@@ -3848,6 +3915,7 @@ def _render_ghsupport_ticket(ticket, expanded=False):
     msg_count = ticket.get("message_count") or len(ticket.get("messages", []))
     messages = ticket.get("messages") or []
     gmail_link = ticket.get("gmail_link") or ""
+    tracked = ticket.get("tracked", False)
 
     last_rel = _slack_relative_time(last_update) if last_update else "?"
     raised_rel = _slack_relative_time(raised_at) if raised_at else "?"
@@ -3872,7 +3940,14 @@ def _render_ghsupport_ticket(ticket, expanded=False):
     )
     if gmail_link:
         links_html += f'<a href="{h(gmail_link)}" target="_blank" rel="noopener noreferrer">Gmail ↗</a>'
+    if not dismissed:
+        links_html += (
+            f'<span class="ghsupport-dismiss" data-action="ghsupport-dismiss" '
+            f'data-ticket-id="{h(tid)}">Dismiss</span>'
+        )
     links_html += '</div>'
+
+    tracked_badge = '<span class="ghsupport-tracked">tracked</span>' if tracked else ''
 
     return (
         f'<div class="task-card ghsupport-ticket{collapsed_cls}" data-ticket="{h(tid)}">'
@@ -3880,6 +3955,7 @@ def _render_ghsupport_ticket(ticket, expanded=False):
         f'<span class="ghsupport-chevron">{chevron}</span>'
         f'<a class="ghsupport-badge" href="{h(ticket_url)}" '
         f'target="_blank" rel="noopener noreferrer">#{h(tid)}</a>'
+        f'{tracked_badge}'
         f'<span class="ghsupport-status {status_cls}">{status_label}</span>'
         f'<span class="ghsupport-subject">{h(subject)}</span>'
         f'<span class="ghsupport-meta">{h(raised_by)} · {h(last_rel)} · {msg_count} msgs</span>'
@@ -3898,8 +3974,8 @@ def _build_ghsupport_body(data, week):
         return (
             '<div class="task-card ghsupport-empty-state">'
             '<h3>No GH Support data yet</h3>'
-            '<p>Run <code>/email</code> in Claude Code to populate this view. '
-            'GH Support tickets from watched tasks will appear here.'
+            '<p>Run <code>/gh-support-triage</code> in Claude Code to populate this view. '
+            'GitHub Support conversations from the last 7 days will appear here.'
             '</p></div>'
         )
     if snapshot.get("_error") == "malformed":
@@ -3907,7 +3983,7 @@ def _build_ghsupport_body(data, week):
             '<div class="task-card ghsupport-empty-state">'
             '<h3>Snapshot is unreadable</h3>'
             '<p><code>~/todo/gh-support-triage.json</code> exists but failed to parse. '
-            'Re-run <code>/email</code> to regenerate.</p></div>'
+            'Re-run <code>/gh-support-triage</code> to regenerate.</p></div>'
         )
     if snapshot.get("_error") == "version":
         got = snapshot.get("got")
@@ -3919,15 +3995,13 @@ def _build_ghsupport_body(data, week):
         )
 
     tickets = snapshot.get("tickets") or []
-    if not tickets:
-        return (
-            '<div class="task-card ghsupport-empty-state">'
-            '<h3>No tracked tickets</h3>'
-            '<p>No GH Support tickets found. Add a ticket link to a task, then run '
-            '<code>/email</code>.</p></div>'
-        )
+    dismissed_ids = load_ghsupport_dismissed()
 
-    tickets_sorted = sorted(tickets, key=lambda t: t.get("last_update", ""), reverse=True)
+    active = [t for t in tickets if str(t.get("ticket_id", "")) not in dismissed_ids]
+    dismissed = [t for t in tickets if str(t.get("ticket_id", "")) in dismissed_ids]
+
+    active_sorted = sorted(active, key=lambda t: t.get("last_update", ""), reverse=True)
+    dismissed_sorted = sorted(dismissed, key=lambda t: t.get("last_update", ""), reverse=True)
 
     gen_at = snapshot.get("generated_at", "")
     rel = _slack_relative_time(gen_at) if gen_at else "unknown"
@@ -3941,16 +4015,57 @@ def _build_ghsupport_body(data, week):
         if (now - gen_dt).total_seconds() > 24 * 3600:
             is_stale = True
     stale_badge = ' <span class="ghsupport-stale">stale</span>' if is_stale else ''
+
+    total = len(active) + len(dismissed)
     header = (
         f'<div class="ghsupport-header">'
-        f'{len(tickets)} ticket{"s" if len(tickets) != 1 else ""} · '
+        f'{total} ticket{"s" if total != 1 else ""} · '
         f'Last refreshed {h(rel)}{stale_badge}'
         f'</div>'
     )
 
     parts = [header]
-    for i, ticket in enumerate(tickets_sorted):
+
+    if not active and not dismissed:
+        parts.append(
+            '<div class="task-card ghsupport-empty-state">'
+            '<h3>No GH Support threads</h3>'
+            '<p>Run <code>/gh-support-triage</code> in Claude Code to fetch '
+            'GitHub Support conversations.</p></div>'
+        )
+        return "".join(parts)
+
+    for i, ticket in enumerate(active_sorted):
         parts.append(_render_ghsupport_ticket(ticket, expanded=(i == 0)))
+
+    if dismissed_sorted:
+        dismissed_rows = []
+        for t in dismissed_sorted:
+            tid = t.get("ticket_id") or "?"
+            subj = t.get("subject") or "(no subject)"
+            wo = t.get("waiting_on") or "?"
+            dismissed_rows.append(
+                f'<div class="ghsupport-dismissed-row" data-ticket-id="{h(tid)}">'
+                f'<a class="ghsupport-badge" href="{h(t.get("ticket_url") or "")}" '
+                f'target="_blank" rel="noopener noreferrer">#{h(tid)}</a>'
+                f'<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{h(subj)}</span>'
+                f'<span class="ghsupport-status {"waiting-us" if wo == "us" else "waiting-github"}">'
+                f'{"Waiting on us" if wo == "us" else "Waiting on GitHub"}</span>'
+                f'<span class="ghsupport-restore" data-action="ghsupport-restore" '
+                f'data-ticket-id="{h(tid)}">Restore</span>'
+                f'</div>'
+            )
+        parts.append(
+            f'<div class="ghsupport-dismissed-section">'
+            f'<div class="ghsupport-dismissed-header" data-action="toggle-dismissed">'
+            f'<span class="ghsupport-chevron">▸</span>'
+            f'Dismissed ({len(dismissed_sorted)})'
+            f'</div>'
+            f'<div class="ghsupport-dismissed-list">'
+            f'{"".join(dismissed_rows)}'
+            f'</div>'
+            f'</div>'
+        )
 
     return "".join(parts)
 
@@ -5278,7 +5393,7 @@ def apply_email_convert(body):
 
 
 # ---------------------------------------------------------------------------
-# GH Support triage snapshot (read-only view)
+# GH Support triage snapshot
 # ---------------------------------------------------------------------------
 
 def load_ghsupport_snapshot():
@@ -5292,6 +5407,37 @@ def load_ghsupport_snapshot():
     if data.get("version") != GH_SUPPORT_SNAPSHOT_VERSION:
         return {"_error": "version", "got": data.get("version")}
     return data
+
+
+def load_ghsupport_dismissed():
+    out = set()
+    for rec in load_slack_log(GH_SUPPORT_DISMISSED_FILE, ttl_days=GH_SUPPORT_DISMISS_TTL_DAYS):
+        rid = rec.get("id")
+        if isinstance(rid, str) and rid:
+            out.add(rid)
+    return out
+
+
+def apply_ghsupport_dismiss(item_id):
+    if not isinstance(item_id, str) or not item_id:
+        return False
+    record = {"id": item_id, "ts": _now_iso()}
+    with _ghsupport_lock:
+        _append_slack_log(GH_SUPPORT_DISMISSED_FILE, record)
+        _maybe_compact_slack_log(GH_SUPPORT_DISMISSED_FILE, ttl_days=GH_SUPPORT_DISMISS_TTL_DAYS)
+    _bump_state_version()
+    return {"ok": True}
+
+
+def apply_ghsupport_restore(item_id):
+    if not isinstance(item_id, str) or not item_id:
+        return False
+    with _ghsupport_lock:
+        records = load_slack_log(GH_SUPPORT_DISMISSED_FILE, ttl_days=GH_SUPPORT_DISMISS_TTL_DAYS)
+        kept = [r for r in records if r.get("id") != item_id]
+        _atomic_write_jsonl(GH_SUPPORT_DISMISSED_FILE, kept)
+    _bump_state_version()
+    return {"ok": True}
 
 
 def apply_add(task_data):
@@ -5433,9 +5579,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             email_d = _safe_mtime(EMAIL_DISMISSED_FILE)
             email_c = _safe_mtime(EMAIL_CONVERTED_FILE)
             ghs_t   = _safe_mtime(GH_SUPPORT_SNAPSHOT_FILE)
+            ghs_d   = _safe_mtime(GH_SUPPORT_DISMISSED_FILE)
             combined_mtime = max(json_mtime, src_mtime, core_mtime,
                                  slack_t, slack_d, slack_c,
-                                 email_t, email_d, email_c, ghs_t)
+                                 email_t, email_d, email_c, ghs_t, ghs_d)
             etag = f'"{combined_mtime:.6f}-{view}"'
             last_modified = email.utils.formatdate(int(combined_mtime), usegmt=True)
         except Exception:
@@ -5496,6 +5643,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         "/slack/convert": lambda b: apply_slack_convert(b),
         "/email/dismiss": lambda b: apply_email_dismiss(b.get("id")),
         "/email/convert": lambda b: apply_email_convert(b),
+        "/ghsupport/dismiss": lambda b: apply_ghsupport_dismiss(b.get("id")),
+        "/ghsupport/restore": lambda b: apply_ghsupport_restore(b.get("id")),
     }
 
     def do_POST(self):
