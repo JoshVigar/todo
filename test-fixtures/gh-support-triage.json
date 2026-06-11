@@ -12,6 +12,7 @@
       "raised_at": "2026-05-05T12:49:00+01:00",
       "last_update": "2026-05-05T23:09:45+01:00",
       "waiting_on": "us",
+      "tracked": true,
       "message_count": 2,
       "messages": [
         {
@@ -39,6 +40,7 @@
       "raised_at": "2026-04-29T09:34:00+01:00",
       "last_update": "2026-05-05T17:44:45+01:00",
       "waiting_on": "us",
+      "tracked": false,
       "message_count": 11,
       "messages": [
         {
@@ -120,6 +122,7 @@
       "raised_at": "2026-04-30T09:40:00+01:00",
       "last_update": "2026-04-30T18:27:36+01:00",
       "waiting_on": "us",
+      "tracked": true,
       "message_count": 3,
       "messages": [
         {

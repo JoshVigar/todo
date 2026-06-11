@@ -2393,6 +2393,19 @@ document.addEventListener('click', function(e) {
   }
 });
 
+// REQUIRED: route external links through /open endpoint. cmux's embedded
+// WebKit ignores target="_blank", so without this handler clicks do nothing.
+// /open runs macOS `open` which delegates to Finicky for Slack deep linking.
+document.addEventListener('click', function(e) {
+  var a = e.target.closest('a[href]');
+  if (!a) return;
+  var href = a.href;
+  if (href && !href.startsWith(location.origin) && href.match(/^https?:\/\//)) {
+    e.preventDefault();
+    fetch('/open?url=' + encodeURIComponent(href));
+  }
+});
+
 // Custom hover tooltip — fires immediately, no native delay.
 // Any element with [data-tip="..."] gets a styled bubble near the cursor.
 (function() {
