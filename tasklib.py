@@ -265,7 +265,7 @@ def parse_core_focus(journal_lines, weekday_header):
                 if tasks:
                     break
                 continue
-            m = re.match(r"^\d+\.\s+(.+)", stripped)
+            m = re.match(r"^(?:\d+\.\s+|-\s+)(.+)", stripped)
             if m:
                 tasks.append(m.group(1).strip())
     return tasks

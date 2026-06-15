@@ -1942,13 +1942,16 @@ document.addEventListener('contextmenu', function(e) {
   e.preventDefault();
   _ctxTaskId = parseInt(el.dataset.id);
   var menu = document.getElementById('ctx-menu');
-  // Use clientX/clientY because the menu is position:fixed (viewport-relative).
-  // pageX/pageY include scroll offset and would push the menu below the click.
-  var x = Math.min(e.clientX, window.innerWidth - 200);
-  var y = Math.min(e.clientY, window.innerHeight - 220);
+  menu.style.left = '-9999px';
+  menu.style.top = '-9999px';
+  menu.classList.add('open');
+  var mw = menu.offsetWidth, mh = menu.offsetHeight;
+  var x = Math.min(e.clientX, window.innerWidth - mw - 4);
+  var y = Math.min(e.clientY, window.innerHeight - mh - 4);
+  if (x < 0) x = 4;
+  if (y < 0) y = 4;
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
-  menu.classList.add('open');
 });
 document.addEventListener('click', function(e) {
   var item = e.target.closest('#ctx-menu .ctx-item');
