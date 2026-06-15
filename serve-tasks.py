@@ -1086,8 +1086,13 @@ tr.drag-over-bottom > td { border-bottom: 2px solid #388bfd !important; }
 }
 .ghsupport-ticket { margin-bottom: 8px; }
 .ghsupport-ticket.collapsed .ghsupport-thread { display: none; }
+.ghsupport-pills {
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 4px 4px;
+}
+.ghsupport-pills .ghsupport-meta { margin-left: auto; }
 .ghsupport-ticket-header {
-  display: flex; align-items: center; gap: 10px; padding: 12px;
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px 12px;
   cursor: pointer; user-select: none;
 }
 .ghsupport-ticket-header:hover { background: #161b22; border-radius: 6px; }
@@ -3962,16 +3967,22 @@ def _render_ghsupport_ticket(ticket, expanded=False, dismissed=False):
 
     tracked_badge = '<span class="ghsupport-tracked">tracked</span>' if tracked else ''
 
+    pills_html = (
+        f'<div class="ghsupport-pills">'
+        f'{tracked_badge}'
+        f'<span class="ghsupport-status {status_cls}">{status_label}</span>'
+        f'<span class="ghsupport-meta">{h(raised_by)} · {h(last_rel)} · {msg_count} msgs</span>'
+        f'</div>'
+    )
+
     return (
         f'<div class="task-card ghsupport-ticket{collapsed_cls}" data-ticket="{h(tid)}">'
+        f'{pills_html}'
         f'<div class="ghsupport-ticket-header" data-action="toggle-ticket">'
         f'<span class="ghsupport-chevron">{chevron}</span>'
         f'<a class="ghsupport-badge" href="{h(ticket_url)}" '
         f'target="_blank" rel="noopener noreferrer">#{h(tid)}</a>'
-        f'{tracked_badge}'
-        f'<span class="ghsupport-status {status_cls}">{status_label}</span>'
         f'<span class="ghsupport-subject">{h(subject)}</span>'
-        f'<span class="ghsupport-meta">{h(raised_by)} · {h(last_rel)} · {msg_count} msgs</span>'
         f'{links_html}'
         f'</div>'
         f'<div class="ghsupport-thread">'
