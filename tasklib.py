@@ -240,7 +240,7 @@ def format_due(raw_due, today_str):
 # ── Journal parsing ──────────────────────────────────────────────────────────
 
 def parse_core_focus(journal_lines, weekday_header):
-    """Extract the numbered Core Focus list from today's journal section.
+    """Extract the Core Focus list (numbered or unordered) from today's journal section.
 
     weekday_header: e.g. '## Tuesday 2026-05-05'
     Returns a list of task name strings in order, or [] if no Core Focus found.
@@ -264,6 +264,8 @@ def parse_core_focus(journal_lines, weekday_header):
             if stripped == "":
                 if tasks:
                     break
+                continue
+            if stripped.startswith("- ["):
                 continue
             m = re.match(r"^(?:\d+\.\s+|-\s+)(.+)", stripped)
             if m:
