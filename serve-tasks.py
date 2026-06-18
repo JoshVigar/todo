@@ -2419,12 +2419,15 @@ document.addEventListener('click', function(e) {
     if (el) {
       var text = el.getAttribute('data-tip');
       if (tip.textContent !== text) tip.textContent = text;
-      // Offset just above-right of cursor, keep within viewport
-      var x = e.clientX + 12;
-      var y = e.clientY - 28;
+      tip.classList.add('visible');
+      var tw = tip.offsetWidth, th = tip.offsetHeight;
+      var x = e.clientX + 12, y = e.clientY - 28;
+      if (x + tw > window.innerWidth - 4) x = e.clientX - tw - 12;
+      if (x < 4) x = 4;
+      if (y < 4) y = e.clientY + 16;
+      if (y + th > window.innerHeight - 4) y = window.innerHeight - th - 4;
       tip.style.left = x + 'px';
       tip.style.top = y + 'px';
-      tip.classList.add('visible');
     } else if (tip.classList.contains('visible')) {
       tip.classList.remove('visible');
     }
