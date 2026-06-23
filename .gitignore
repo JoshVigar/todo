@@ -7,6 +7,11 @@ waiting.md
 tasks-live.json
 tasks-live.md
 serve-tasks-requests.log
+email-triage.json
+email-dismissed.jsonl
+email-converted.jsonl
+gh-support-triage.json
+gh-support-dismissed.jsonl
 slack-triage.json
 slack-dismissed.jsonl
 slack-converted.jsonl
