@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+filterwarnings = ["ignore::DeprecationWarning:importlib"]
+addopts = "-q --tb=short"

@@ -5,120 +5,53 @@ gets out of sync with the others (the "compact-row complete is broken because
 the handler used closest('tr')" class). These are not exhaustive — they are
 trip-wires that fire when an obvious invariant gets violated.
 
-Run: SERVE_TASKS_NO_WATCH=1 python3 -m pytest test_serve_tasks.py -q
+Run: pytest -q
 """
-import importlib.util
 import json
 import os
 import pathlib
 import re
 import time as time_module
-from pathlib import Path
-
-# Suppress the daemon threads (auto-restart + SSE notifier) before import.
-os.environ.setdefault("SERVE_TASKS_NO_WATCH", "1")
 
 import pytest
 
-SCRIPT = Path(__file__).parent / "serve-tasks.py"
-spec = importlib.util.spec_from_file_location("st", SCRIPT)
-st = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(st)
+from conftest import (
+    st,
+    fixture_data,
+    SEED_CORE,
+    MUTATING_ROUTES,
+    click_targets_for_task,
+    read_jsonl,
+    slack_snapshot as _slack_snapshot,
+    slack_item as _slack_item,
+    email_snapshot as _email_snapshot,
+    email_item as _email_item,
+    ghsupport_snapshot as _ghsupport_snapshot,
+    ghsupport_ticket as _ghsupport_ticket,
+    goalie_fixture as _goalie_fixture,
+)
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixture consistency
 # ---------------------------------------------------------------------------
 
-def _fixture_data():
-    """A deliberately mixed JSON: at least one task per dashboard column type
-    plus one completed entry. Exercises every render path."""
-    return {
-        "updated": "2026-04-28 12:00",
-        "week": "W18",
-        "sections": [
-            {
-                "title": "Today's Focus",
-                "type": "core",
-                "tasks": [
-                    {"id": 101, "num": 1, "pri": "P1", "task": "Focus task one",
-                     "due": "—", "from": "W18", "added": "2026-04-28",
-                     "links": [], "status": "in_progress", "why": "—"},
-                ],
-            },
-            {
-                "title": "Monitoring",
-                "type": "core",
-                "tasks": [
-                    {"id": 110, "num": 2, "pri": "P3", "task": "Monitoring item",
-                     "due": "—", "from": "W17", "added": "2026-04-21",
-                     "links": [{"label": "doc", "url": "https://example.com/doc"}],
-                     "status": "waiting", "why": "watching for X"},
-                ],
-            },
-            {
-                "title": "High Priority",
-                "type": "core",
-                "tasks": [
-                    {"id": 120, "num": 3, "pri": "P2", "task": "High prio task",
-                     "due": "17:00", "from": "W18", "added": "2026-04-28",
-                     "links": [], "status": "open", "why": "—"},
-                ],
-            },
-            {
-                "title": "Lower Priority",
-                "type": "core",
-                "tasks": [
-                    {"id": 130, "num": 4, "pri": "P4", "task": "Lower prio task",
-                     "due": "—", "from": "W18", "added": "2026-04-28",
-                     "links": [], "status": "open", "why": "—"},
-                ],
-            },
-        ],
-        "completed_today": [
-            {"id": 200, "num": 5, "task": "Already done task",
-             "links": [{"label": "ref", "url": "https://example.com/ref"}],
-             "time": "11:30", "from_section": "High Priority"},
-        ],
-    }
+def test_seed_core_matches_fixture_data():
+    """Guard against SEED_CORE and fixture_data() drifting apart."""
+    import tasklib
+    core_lines = [l for l in SEED_CORE.splitlines() if l.startswith("- [")]
+    core_tasks = [tasklib.parse_task_line(l)["task"] for l in core_lines]
 
+    json_tasks = []
+    for s in fixture_data()["sections"]:
+        for t in s["tasks"]:
+            json_tasks.append(t["task"])
+    for t in fixture_data()["completed_today"]:
+        json_tasks.append(t["task"])
 
-@pytest.fixture
-def data():
-    return _fixture_data()
-
-
-SEED_CORE = """\
-# 2026-W18 Core
-
-## Active
-
-- [-] 🔴 Focus task one
-- [~] 🟡 Monitoring item ([doc](https://example.com/doc))
-- [ ] 🟠 High prio task — due 17:00
-- [ ] 🔵 Lower prio task
-
-## Done
-
-### 2026-04-28
-- [x] 🟠 Already done task ([ref](https://example.com/ref)) _(completed: 2026-04-28 11:30)_
-"""
-
-
-@pytest.fixture
-def isolated_state(tmp_path, monkeypatch):
-    """Point JSON_FILE and current_core_path at temp files seeded with the
-    fixture. Mutating endpoints can be exercised without touching the user's
-    real ~/todo/tasks-live.json or ~/todo/journal/."""
-    json_path = tmp_path / "tasks-live.json"
-    json_path.write_text(json.dumps(_fixture_data(), indent=2))
-    monkeypatch.setattr(st, "JSON_FILE", json_path)
-
-    core_path = tmp_path / "core.md"
-    core_path.write_text(SEED_CORE)
-    monkeypatch.setattr(st, "current_core_path", lambda week=None: core_path)
-
-    return json_path
+    assert core_tasks == json_tasks, (
+        f"SEED_CORE tasks {core_tasks} != fixture_data tasks {json_tasks}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -137,22 +70,6 @@ def test_renders_classic(data):
     assert len(html) > 1000
 
 
-def _click_targets_for_task(html, task_id, *, done=False):
-    """Return all click targets in `html` carrying data-id=task_id.
-    Looks for both table-style (`td.num` / `td.num-done`) and compact-style
-    (`.cmp-id` / `.cmp-id-done`) targets — any one of them is enough."""
-    if done:
-        pattern = (
-            rf'(?:class="[^"]*\b(?:num-done|cmp-id-done)\b[^"]*"\s+data-id="{task_id}"'
-            rf'|data-id="{task_id}"\s+class="[^"]*\b(?:num-done|cmp-id-done)\b[^"]*")'
-        )
-    else:
-        pattern = (
-            rf'(?:class="[^"]*\b(?:num|cmp-id)\b(?![-])[^"]*"\s+data-id="{task_id}"'
-            rf'|data-id="{task_id}"\s+class="[^"]*\b(?:num|cmp-id)\b(?![-])[^"]*")'
-        )
-    return re.findall(pattern, html)
-
 
 @pytest.mark.parametrize("view", ["dashboard", "classic"])
 def test_every_active_task_has_a_clickable_complete_target(data, view):
@@ -163,7 +80,7 @@ def test_every_active_task_has_a_clickable_complete_target(data, view):
     missing = []
     for s in data["sections"]:
         for t in s["tasks"]:
-            if not _click_targets_for_task(html, t["id"]):
+            if not click_targets_for_task(html, t["id"]):
                 missing.append((s["title"], t["id"], t["task"]))
     assert not missing, f"active tasks missing complete-click target: {missing}"
 
@@ -173,7 +90,7 @@ def test_every_completed_task_has_a_clickable_uncomplete_target(data, view):
     html = st.build_page(data, view=view)
     missing = []
     for t in data["completed_today"]:
-        if not _click_targets_for_task(html, t["id"], done=True):
+        if not click_targets_for_task(html, t["id"], done=True):
             missing.append((t["id"], t["task"]))
     assert not missing, f"completed tasks missing uncomplete target: {missing}"
 
@@ -210,13 +127,6 @@ def test_ctx_menu_has_mark_as_done(data):
 # ---------------------------------------------------------------------------
 # Refresh-after-mutation invariants
 # ---------------------------------------------------------------------------
-
-# Every mutating route the server accepts. Each must trigger a view refresh
-# (`_refreshTasks(true)`) so the dashboard never lies.
-MUTATING_ROUTES = [
-    "/update", "/complete", "/update-pri", "/uncomplete",
-    "/sort", "/reorder", "/move-section", "/cancel", "/add", "/edit",
-]
 
 
 def test_table_row_expand_reveals_why_detail(data):
@@ -1114,8 +1024,8 @@ def test_uncomplete_renders_back_in_a_section(isolated_state):
     assert st.apply_uncomplete(200)
     data = json.loads(isolated_state.read_text())
     html = st.build_page(data, view="dashboard")
-    assert _click_targets_for_task(html, 200), "uncompleted task not rendered as active"
-    assert not _click_targets_for_task(html, 200, done=True), "still rendered in completed_today"
+    assert click_targets_for_task(html, 200), "uncompleted task not rendered as active"
+    assert not click_targets_for_task(html, 200, done=True), "still rendered in completed_today"
 
 
 def test_complete_then_uncomplete_round_trip(isolated_state):
@@ -1502,61 +1412,6 @@ def test_help_overlay_is_sectioned(data):
 # Slack triage view
 # ---------------------------------------------------------------------------
 
-def _slack_snapshot(items=None, generated_at=None, noise=None, version=1):
-    """Build a snapshot dict matching the schema in docs/slack-triage-view-design.md."""
-    import datetime as _dt
-    if generated_at is None:
-        generated_at = _dt.datetime.now(_dt.timezone.utc).astimezone().isoformat(timespec="seconds")
-    return {
-        "version": version,
-        "generated_at": generated_at,
-        "items": items or [],
-        "noise": noise or {},
-    }
-
-
-def _slack_item(channel_id="C1", message_ts="111.222", tier="reply_needed",
-                sender="Maria", channel_name="hotsauce-squad", is_dm=False,
-                snippet="need your input on the GHE rollout",
-                permalink=None, ts=None, thread_ts=None,
-                action_hint=None, context=None):
-    import datetime as _dt
-    if permalink is None:
-        permalink = (
-            f"https://spotify.slack.com/archives/{channel_id}"
-            f"/p{message_ts.replace('.', '')}"
-        )
-    if ts is None:
-        ts = _dt.datetime.now(_dt.timezone.utc).astimezone().isoformat(timespec="seconds")
-    item = {
-        "channel_id": channel_id, "message_ts": message_ts, "thread_ts": thread_ts,
-        "tier": tier, "is_dm": is_dm, "sender": sender,
-        "channel_name": channel_name, "permalink": permalink,
-        "snippet": snippet, "ts": ts,
-    }
-    if action_hint is not None: item["action_hint"] = action_hint
-    if context is not None:     item["context"] = context
-    return item
-
-
-@pytest.fixture
-def slack_state(tmp_path, monkeypatch):
-    """Point SLACK_*_FILE constants at temp paths. Returns a dict of the
-    three Path objects so tests can write/read directly. Dismissed/converted
-    are JSONL append-logs."""
-    triage = tmp_path / "slack-triage.json"
-    dismissed = tmp_path / "slack-dismissed.jsonl"
-    converted = tmp_path / "slack-converted.jsonl"
-    monkeypatch.setattr(st, "SLACK_SNAPSHOT_FILE", triage)
-    monkeypatch.setattr(st, "SLACK_DISMISSED_FILE", dismissed)
-    monkeypatch.setattr(st, "SLACK_CONVERTED_FILE", converted)
-    return {"triage": triage, "dismissed": dismissed, "converted": converted}
-
-
-def _read_jsonl(path):
-    """Read a JSONL file as a list of dicts. Test helper."""
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-
 
 def test_slack_view_renders_three_sections(data, slack_state):
     slack_state["triage"].write_text(json.dumps(_slack_snapshot(items=[
@@ -1612,7 +1467,7 @@ def test_slack_dismiss_records_id_and_filters_item(data, slack_state):
     assert st.apply_slack_dismiss(item_id)
 
     # Dismissed file written as JSONL: one record per line
-    records = _read_jsonl(slack_state["dismissed"])
+    records = read_jsonl(slack_state["dismissed"])
     assert len(records) == 1
     assert records[0]["id"] == item_id
     assert records[0]["kind"] == "message"
@@ -1630,7 +1485,7 @@ def test_slack_dismiss_appends_each_call(slack_state):
     even though the file isn't."""
     st.apply_slack_dismiss("C1:1.1")
     st.apply_slack_dismiss("C1:1.1")
-    records = _read_jsonl(slack_state["dismissed"])
+    records = read_jsonl(slack_state["dismissed"])
     assert len(records) == 2  # two appends, but...
     msgs, _ = st.load_slack_dismissed()
     assert msgs == {"C1:1.1"}  # ...the active set has just the one id
@@ -1659,7 +1514,7 @@ def test_slack_convert_creates_task_and_records_id(isolated_state, slack_state):
     names = [t["task"] for s in after["sections"] for t in s["tasks"]]
     assert "Reply to Maria in #hotsauce-squad" in names
     # Converted id recorded as a JSONL row
-    records = _read_jsonl(slack_state["converted"])
+    records = read_jsonl(slack_state["converted"])
     assert len(records) == 1
     assert records[0]["id"] == "CABC:1.111"
     assert "ts" in records[0]
@@ -1805,7 +1660,7 @@ def test_slack_dismiss_via_post_route(isolated_state, slack_state):
     assert "/slack/convert" in routes
     handler = routes["/slack/dismiss"]
     assert handler({"id": "CXX:9.9"})
-    records = _read_jsonl(slack_state["dismissed"])
+    records = read_jsonl(slack_state["dismissed"])
     assert any(r["id"] == "CXX:9.9" for r in records)
 
 
@@ -1940,7 +1795,7 @@ def test_slack_log_compaction_drops_expired(slack_state, monkeypatch):
     assert slack_state["dismissed"].stat().st_size > 200
     # Trigger a write — appends a new fresh record AND triggers compaction
     assert st.apply_slack_dismiss("C1:NEW")
-    records = _read_jsonl(slack_state["dismissed"])
+    records = read_jsonl(slack_state["dismissed"])
     ids = {r["id"] for r in records}
     # Old records compacted out; fresh + new survive
     assert "C1:KEEP" in ids
@@ -1970,7 +1825,7 @@ def test_slack_dismiss_route_passes_scope(isolated_state, slack_state):
     so the JSONL line carries kind=thread."""
     handler = st.Handler._ROUTES["/slack/dismiss"]
     assert handler({"id": "C1:1.111", "scope": "thread"})
-    records = _read_jsonl(slack_state["dismissed"])
+    records = read_jsonl(slack_state["dismissed"])
     assert any(r.get("kind") == "thread" for r in records)
 
 
@@ -1978,7 +1833,7 @@ def test_slack_dismiss_route_defaults_to_message_scope(isolated_state, slack_sta
     """A POST without `scope` defaults to message-level dismissal."""
     handler = st.Handler._ROUTES["/slack/dismiss"]
     assert handler({"id": "C1:1.111"})
-    records = _read_jsonl(slack_state["dismissed"])
+    records = read_jsonl(slack_state["dismissed"])
     assert all(r.get("kind") == "message" for r in records)
 
 
@@ -2307,35 +2162,6 @@ class TestRenderGoalieSection:
 # Goalie view
 # ---------------------------------------------------------------------------
 
-def _goalie_fixture():
-    """Data with Today's Focus + one goalie section."""
-    return {
-        "updated": "2026-05-11 09:00",
-        "week": "W20",
-        "sections": [
-            {
-                "title": "Today's Focus",
-                "tasks": [
-                    {"id": 1, "num": 1, "pri": "P2", "task": "Focus task",
-                     "due": "—", "from": "W20", "added": "2026-05-11",
-                     "links": [], "status": "open", "why": "—"},
-                ],
-            },
-            {
-                "type": "goalie",
-                "title": "Start here",
-                "tasks": [
-                    {"id": 100, "num": 10, "task": "VCSUP goalie task",
-                     "links": [{"label": "VCSUP-1", "url": "https://example.com"}],
-                     "status": "waiting_support"},
-                ],
-            },
-        ],
-        "completed_today": [],
-        "counts": "✅ 0 core tasks completed this week",
-    }
-
-
 class TestGoalieView:
 
     def test_goalie_in_views(self):
@@ -2389,42 +2215,6 @@ class TestGoalieView:
 # Email view tests
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def email_state(tmp_path, monkeypatch):
-    triage = tmp_path / "email-triage.json"
-    dismissed = tmp_path / "email-dismissed.jsonl"
-    converted = tmp_path / "email-converted.jsonl"
-    monkeypatch.setattr(st, "EMAIL_SNAPSHOT_FILE", triage)
-    monkeypatch.setattr(st, "EMAIL_DISMISSED_FILE", dismissed)
-    monkeypatch.setattr(st, "EMAIL_CONVERTED_FILE", converted)
-    return {"triage": triage, "dismissed": dismissed, "converted": converted}
-
-
-def _email_snapshot(items=None, version=1):
-    return {
-        "version": version,
-        "generated_at": "2026-05-22T10:30:00+01:00",
-        "items": items or [],
-        "summary": {"total_fetched": 10, "filtered_noise": 5, "gh_support_threads": 1},
-    }
-
-
-def _email_item(email_id="e1", category="general", tier="action_needed",
-                sender="Alice", subject="Test subject", snippet="Test snippet"):
-    return {
-        "email_id": email_id,
-        "thread_id": email_id,
-        "category": category,
-        "tier": tier,
-        "sender": sender,
-        "sender_email": f"{sender.lower()}@spotify.com",
-        "subject": subject,
-        "snippet": snippet,
-        "ts": "2026-05-22T10:00:00+01:00",
-        "link": f"https://mail.google.com/mail/u/0/#inbox/{email_id}",
-    }
-
-
 def test_email_view_renders_sections(data, email_state):
     email_state["triage"].write_text(json.dumps(_email_snapshot(items=[
         _email_item(email_id="e2", tier="action_needed", sender="Bob",
@@ -2473,7 +2263,7 @@ def test_email_dismiss_records_and_filters(data, email_state):
     result = st.apply_email_dismiss("e1")
     assert result == {"ok": True}
     assert email_state["dismissed"].exists()
-    records = _read_jsonl(email_state["dismissed"])
+    records = read_jsonl(email_state["dismissed"])
     assert any(r["id"] == "e1" for r in records)
     dismissed = st.load_email_dismissed()
     assert "e1" in dismissed
@@ -2558,48 +2348,6 @@ def test_email_stale_badge(data, email_state):
 # ---------------------------------------------------------------------------
 # GH Support view tests
 # ---------------------------------------------------------------------------
-
-@pytest.fixture
-def ghsupport_state(tmp_path, monkeypatch):
-    triage = tmp_path / "gh-support-triage.json"
-    dismissed = tmp_path / "ghsupport-dismissed.jsonl"
-    monkeypatch.setattr(st, "GH_SUPPORT_SNAPSHOT_FILE", triage)
-    monkeypatch.setattr(st, "GH_SUPPORT_DISMISSED_FILE", dismissed)
-    return {"triage": triage, "dismissed": dismissed}
-
-
-def _ghsupport_snapshot(tickets=None, version=1):
-    return {
-        "version": version,
-        "generated_at": "2026-05-22T10:30:00+01:00",
-        "tickets": tickets or [],
-    }
-
-
-def _ghsupport_ticket(ticket_id="4338773", subject="IdP issues",
-                       waiting_on="us", message_count=3):
-    return {
-        "ticket_id": ticket_id,
-        "ticket_url": f"https://support.github.com/ticket/{ticket_id}",
-        "ticket_code": "TEST-CODE",
-        "subject": subject,
-        "category": "General support request",
-        "raised_by": "Ellie Kelsch",
-        "raised_at": "2026-04-29T09:34:00+01:00",
-        "last_update": "2026-05-05T17:44:45+01:00",
-        "waiting_on": waiting_on,
-        "message_count": message_count,
-        "messages": [
-            {"author": "Ellie Kelsch", "ts": "2026-04-29T09:34:00+01:00",
-             "is_support": False, "content": "Hello, we have an issue with IdP groups."},
-            {"author": "James", "ts": "2026-04-29T15:27:00+01:00",
-             "is_support": True, "content": "Hi Ellie, I'll look into this."},
-            {"author": "James", "ts": "2026-05-05T16:44:00+01:00",
-             "is_support": True, "content": "Just a quick update, could you try..."},
-        ],
-        "gmail_link": "https://mail.google.com/mail/u/0/#inbox/test123",
-    }
-
 
 def test_ghsupport_view_renders_tickets(data, ghsupport_state):
     ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[
