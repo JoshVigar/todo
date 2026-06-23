@@ -2427,8 +2427,6 @@ def _email_item(email_id="e1", category="general", tier="action_needed",
 
 def test_email_view_renders_sections(data, email_state):
     email_state["triage"].write_text(json.dumps(_email_snapshot(items=[
-        _email_item(email_id="e1", category="gh_support", tier="action_needed",
-                    sender="GitHub Support", subject="Ticket update"),
         _email_item(email_id="e2", tier="action_needed", sender="Bob",
                     subject="Need review"),
         _email_item(email_id="e3", tier="fyi", sender="Carol",
@@ -2437,11 +2435,10 @@ def test_email_view_renders_sections(data, email_state):
                     subject="PR merged"),
     ])))
     html = st.build_page(data, view="email")
-    assert "GH Support Tickets" in html
+    assert "GH Support Tickets" not in html
     assert "Action Needed" in html
     assert "FYI" in html
     assert "Already Handled" in html
-    assert "GitHub Support" in html
     assert "Bob" in html
     assert "email-section collapsed" in html
 
@@ -2510,15 +2507,19 @@ def test_email_convert_failure_does_not_record(data, email_state, isolated_state
 def test_email_view_filters_dismissed_and_converted(data, email_state):
     email_state["triage"].write_text(json.dumps(_email_snapshot(items=[
         _email_item(email_id="e1", sender="Visible"),
-        _email_item(email_id="e2", sender="Dismissed"),
-        _email_item(email_id="e3", sender="Converted"),
+        _email_item(email_id="e2", sender="Xdismissed Xperson"),
+        _email_item(email_id="e3", sender="Xconverted Xperson"),
     ])))
-    email_state["dismissed"].write_text('{"id": "e2", "ts": "2026-05-22T10:00:00+01:00"}\n')
-    email_state["converted"].write_text('{"id": "e3", "ts": "2026-05-22T10:00:00+01:00"}\n')
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    email_state["dismissed"].write_text(f'{{"id": "e2", "ts": "{now_iso}"}}\n')
+    email_state["converted"].write_text(f'{{"id": "e3", "ts": "{now_iso}"}}\n')
     html = st._build_email_body(data, "W21")
-    assert "Visible" in html
-    assert "Dismissed" not in html
-    assert "Converted" not in html
+    script_start = html.find("email-items-data")
+    rendered = html[:script_start] if script_start != -1 else html
+    assert "Visible" in rendered
+    assert "Xdismissed" not in rendered
+    assert "Xconverted" not in rendered
 
 
 def test_email_view_embeds_items_data(data, email_state):
@@ -2561,8 +2562,10 @@ def test_email_stale_badge(data, email_state):
 @pytest.fixture
 def ghsupport_state(tmp_path, monkeypatch):
     triage = tmp_path / "gh-support-triage.json"
+    dismissed = tmp_path / "ghsupport-dismissed.jsonl"
     monkeypatch.setattr(st, "GH_SUPPORT_SNAPSHOT_FILE", triage)
-    return {"triage": triage}
+    monkeypatch.setattr(st, "GH_SUPPORT_DISMISSED_FILE", dismissed)
+    return {"triage": triage, "dismissed": dismissed}
 
 
 def _ghsupport_snapshot(tickets=None, version=1):
@@ -2661,7 +2664,7 @@ def test_ghsupport_view_first_ticket_expanded(data, ghsupport_state):
 def test_ghsupport_no_tickets_placeholder(data, ghsupport_state):
     ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[])))
     html = st.build_page(data, view="ghsupport")
-    assert "No tracked tickets" in html
+    assert "No GH Support threads" in html
 
 
 def test_ghsupport_view_has_portal_and_gmail_links(data, ghsupport_state):
@@ -2679,6 +2682,72 @@ def test_ghsupport_view_in_view_switcher(data, ghsupport_state):
     ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot()))
     html = st.build_page(data, view="ghsupport")
     assert '?view=ghsupport' in html
+
+
+def test_ghsupport_dismiss_records_and_filters(data, ghsupport_state):
+    ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[
+        _ghsupport_ticket(ticket_id="111", subject="Keep me"),
+        _ghsupport_ticket(ticket_id="222", subject="Dismiss me"),
+    ])))
+    result = st.apply_ghsupport_dismiss("222")
+    assert result == {"ok": True}
+    dismissed = st.load_ghsupport_dismissed()
+    assert "222" in dismissed
+    assert "111" not in dismissed
+    html = st._build_ghsupport_body(data, "W21")
+    assert "Keep me" in html
+    assert "ghsupport-dismissed-section" in html
+
+
+def test_ghsupport_restore_removes_record(data, ghsupport_state):
+    ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[
+        _ghsupport_ticket(ticket_id="333"),
+    ])))
+    st.apply_ghsupport_dismiss("333")
+    assert "333" in st.load_ghsupport_dismissed()
+    result = st.apply_ghsupport_restore("333")
+    assert result == {"ok": True}
+    assert "333" not in st.load_ghsupport_dismissed()
+
+
+def test_ghsupport_dismiss_rejects_bad_input(ghsupport_state):
+    assert st.apply_ghsupport_dismiss("") is False
+    assert st.apply_ghsupport_dismiss(None) is False
+    assert st.apply_ghsupport_restore("") is False
+    assert st.apply_ghsupport_restore(None) is False
+
+
+def test_ghsupport_routes_in_route_table():
+    routes = st.Handler._ROUTES
+    assert "/ghsupport/dismiss" in routes
+    assert "/ghsupport/restore" in routes
+
+
+def test_ghsupport_view_splits_active_and_dismissed(data, ghsupport_state):
+    ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[
+        _ghsupport_ticket(ticket_id="AAA", subject="Active ticket"),
+        _ghsupport_ticket(ticket_id="BBB", subject="Dismissed ticket"),
+    ])))
+    st.apply_ghsupport_dismiss("BBB")
+    html = st._build_ghsupport_body(data, "W21")
+    assert "Active ticket" in html
+    assert "ghsupport-dismissed-section" in html
+    assert "Dismissed (1)" in html
+    assert 'data-action="ghsupport-restore"' in html
+
+
+def test_ghsupport_tracked_badge(data, ghsupport_state):
+    ghsupport_state["triage"].write_text(json.dumps(_ghsupport_snapshot(tickets=[
+        {**_ghsupport_ticket(ticket_id="T1"), "tracked": True},
+        {**_ghsupport_ticket(ticket_id="T2"), "tracked": False},
+    ])))
+    html = st._build_ghsupport_body(data, "W21")
+    t1_pos = html.index('data-ticket="T1"')
+    t2_pos = html.index('data-ticket="T2"')
+    t1_chunk = html[:t1_pos + 200]
+    t2_chunk = html[t2_pos:t2_pos + 200]
+    assert "ghsupport-tracked" in t1_chunk
+    assert "ghsupport-tracked" not in t2_chunk
 
 
 def test_email_and_ghsupport_in_views_list():
