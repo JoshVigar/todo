@@ -3367,7 +3367,7 @@ def _build_dashboard_body(data, week):
         f'</div>'
     )
     if data.get("updated"):
-        parts.append(f'<p class="counts debug-toggle" style="margin-top:16px;color:#484f58;cursor:pointer" title="Toggle debug panel (`)">Updated {h(data["updated"])}</p>\n')
+        parts.append(f'<p class="counts debug-toggle" style="margin-top:16px;color:#484f58;cursor:pointer" title="Toggle debug panel (`)">Updated {h(data["updated"])} · <code style="font-size:11px;color:#6e7681">/tasks</code></p>\n')
     return "".join(parts)
 
 
@@ -3400,7 +3400,7 @@ def _build_classic_body(data, week):
     if completed_html:
         parts.append(card(completed_html))
     if data.get("updated"):
-        parts.append(f'<p class="counts debug-toggle" style="margin-top:16px;color:#484f58;cursor:pointer" title="Toggle debug panel (`)">Updated {h(data["updated"])}</p>\n')
+        parts.append(f'<p class="counts debug-toggle" style="margin-top:16px;color:#484f58;cursor:pointer" title="Toggle debug panel (`)">Updated {h(data["updated"])} · <code style="font-size:11px;color:#6e7681">/tasks</code></p>\n')
     return "".join(parts)
 
 
@@ -3543,7 +3543,7 @@ def _build_goalie_body(data, week):
     if data.get("updated"):
         parts.append(
             f'<p class="counts debug-toggle" style="margin-top:16px;color:#484f58;cursor:pointer" title="Toggle debug panel (`)">'
-            f'Updated {h(data["updated"])}</p>\n'
+            f'Updated {h(data["updated"])} · <code style="font-size:11px;color:#6e7681">/tasks</code></p>\n'
         )
     return "".join(parts)
 
@@ -3624,6 +3624,7 @@ def _build_slack_body(data, week):
         f'<div class="slack-header">'
         f'Last refreshed <span class="slack-refresh-ts">{h(gen_at) or "—"}</span>'
         f' (<span class="slack-refresh-rel">{h(rel)}</span>){stale_badge}'
+        f' · <code style="font-size:11px;color:#6e7681">/slack</code>'
         f'</div>'
     )
     parts.append(header)
@@ -3783,6 +3784,7 @@ def _build_email_body(data, week):
         f'<div class="email-header">'
         f'Last refreshed <span class="email-refresh-ts">{h(gen_at) or "—"}</span>'
         f' (<span class="email-refresh-rel">{h(rel)}</span>){stale_badge}'
+        f' · <code style="font-size:11px;color:#6e7681">/email</code>'
         f'</div>'
     )
     parts.append(header)
@@ -4051,6 +4053,7 @@ def _build_ghsupport_body(data, week):
         f'<div class="ghsupport-header">'
         f'{total} ticket{"s" if total != 1 else ""} · '
         f'Last refreshed {h(rel)}{stale_badge}'
+        f' · <code style="font-size:11px;color:#6e7681">/gh-support-triage</code>'
         f'</div>'
     )
 
