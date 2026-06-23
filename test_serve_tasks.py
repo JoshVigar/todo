@@ -8,6 +8,7 @@ trip-wires that fire when an obvious invariant gets violated.
 Run: pytest -q
 """
 import json
+import tasklib
 import os
 import pathlib
 import re
@@ -1148,7 +1149,7 @@ def test_apply_edit_preserves_carried_metadata(isolated_state):
     preserve that suffix when rewriting the rest of the line."""
     core_path = st.current_core_path("W18")
     lines = core_path.read_text().split("\n")
-    done_idx = st._done_boundary(lines, len(lines))
+    done_idx = tasklib.done_boundary(lines)
     carried_line = "- [ ] 🟠 Carried task name — due 14:00 _(carried from W17)_"
     lines.insert(done_idx, carried_line)
     core_path.write_text("\n".join(lines))
@@ -1245,7 +1246,7 @@ def test_apply_edit_preserves_carried_with_real_why(isolated_state):
     matching the actual convention in journal core files)."""
     core_path = st.current_core_path("W18")
     lines = core_path.read_text().split("\n")
-    done_idx = st._done_boundary(lines, len(lines))
+    done_idx = tasklib.done_boundary(lines)
     line = (
         "- [ ] 🟠 Carried with why — due 14:00 "
         "_(carried from W17)_ _(why: blocked on review)_"
@@ -1283,7 +1284,7 @@ def test_apply_edit_no_priority_emoji(isolated_state):
     the rewritten line."""
     core_path = st.current_core_path("W18")
     lines = core_path.read_text().split("\n")
-    done_idx = st._done_boundary(lines, len(lines))
+    done_idx = tasklib.done_boundary(lines)
     lines.insert(done_idx, "- [ ] No-emoji task")
     core_path.write_text("\n".join(lines))
 
@@ -1665,10 +1666,10 @@ def test_slack_dismiss_via_post_route(isolated_state, slack_state):
 
 
 def test_slack_atomic_write_uses_replace(tmp_path):
-    """_atomic_write_json must write via tempfile + os.replace so partial
+    """_atomic_write_text must write via tempfile + os.replace so partial
     files are never observed."""
     target = tmp_path / "out.json"
-    st._atomic_write_json(target, {"version": 1, "ids": ["a", "b"]})
+    st._atomic_write_text(target, json.dumps({"version": 1, "ids": ["a", "b"]}))
     assert json.loads(target.read_text()) == {"version": 1, "ids": ["a", "b"]}
     # No leftover .tmp files
     leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".")]
@@ -1897,7 +1898,7 @@ def test_slack_converted_log_is_never_compacted(slack_state, monkeypatch):
 
 
 def test_save_state_preserves_mode_bits(isolated_state):
-    """_atomic_write_json (used by _save_state) must preserve the target's
+    """_atomic_write_text (used by _save_state) must preserve the target's
     existing permission bits. tempfile.mkstemp creates 0600 by default,
     which would silently tighten the file's mode without the chmod guard."""
     # Set a non-default mode the user can observe

@@ -15,6 +15,7 @@ import urllib.parse
 from pathlib import Path
 
 import tasklib
+from tasklib import PRI_EMOJI, SEC_FOCUS, SEC_HIGH, SEC_LOW, SEC_MON
 
 _server = None
 
@@ -121,13 +122,7 @@ STATE_MARKER = {
 
 PRI_LABEL = {"P1": "P1 🔴", "P2": "P2 🟠", "P3": "P3 🟡", "P4": "P4 🔵", "P5": "P5 ⏸️"}
 PRI_CSS   = {"P1": "p1",    "P2": "p2",    "P3": "p3",    "P4": "p4",    "P5": "p5"}
-PRI_EMOJI = {"P1": "🔴",    "P2": "🟠",    "P3": "🟡",    "P4": "🔵",    "P5": "⏸️"}
 PRI_CYCLE = {"P1": "P2", "P2": "P3", "P3": "P4", "P4": "P5", "P5": "P1", None: "P3"}
-
-SEC_FOCUS = "Today's Focus"
-SEC_HIGH  = "High Priority"
-SEC_LOW   = "Lower Priority"
-SEC_MON   = "Monitoring"
 
 
 def target_section_for_pri(pri):
@@ -164,33 +159,6 @@ def _safe_mtime(path):
     except OSError:
         return 0
 
-
-def _atomic_write_json(path, data):
-    """Write JSON via tempfile + os.replace so a partial write is never observed.
-    Preserves the target's existing mode bits across the replace — `mkstemp`
-    creates 0600 by default, which would silently tighten permissions on a
-    pre-existing file (e.g. tasks-live.json) without this guard."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing_mode = None
-    try:
-        existing_mode = path.stat().st_mode & 0o777
-    except OSError:
-        pass
-    fd, tmp = tempfile.mkstemp(
-        prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        if existing_mode is not None:
-            os.chmod(tmp, existing_mode)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 def _atomic_write_text(path, content):
     """Write text via tempfile + os.replace so a partial write is never observed."""
@@ -282,28 +250,6 @@ def _watch_state():
 
 if not os.environ.get("SERVE_TASKS_NO_WATCH"):
     threading.Thread(target=_watch_state, daemon=True).start()
-
-_TASK_NAME_BOUNDARY = tasklib._TASK_NAME_BOUNDARY
-
-def _extract_task_name(line):
-    """Pull the task name out of a core-file line like '- [X] 🟠 Task name — due 17:00 (link)'.
-    Returns None if the line isn't a task line."""
-    m = re.match(r"\s*- \[.\]\s+", line)
-    if not m:
-        return None
-    body = line[m.end():]
-    for emoji in PRI_EMOJI.values():
-        if body.startswith(emoji + " "):
-            body = body[len(emoji) + 1:]
-            break
-    cut = _TASK_NAME_BOUNDARY.search(body)
-    return (body[:cut.start()] if cut else body).rstrip()
-
-
-def _done_boundary(lines, default=None):
-    """Index of the '## Done' header line, or `default` if absent."""
-    return next((i for i, l in enumerate(lines) if l.strip() == "## Done"), default)
-
 
 def _insert_under_dated_section(lines, section_title, dated_line, today_str, *, anchor_after=None):
     """Insert `dated_line` under `## {section_title}` → `### {today_str}`.
@@ -413,7 +359,7 @@ def find_task_line(lines, task_name, *, end_idx=None, marker=None):
             continue
         if marker and not stripped.startswith(f"- {marker}"):
             continue
-        name = _extract_task_name(line)
+        name = tasklib.task_name(line)
         if name is not None and name.lower() == target:
             return i
     return None
@@ -4332,7 +4278,7 @@ def update_core_file(task_name, new_status, now, week=None):
     ts = now.strftime("%Y-%m-%d %H:%M")
 
     # Find ## Done boundary
-    done_section = _done_boundary(lines, len(lines))
+    done_section = tasklib.done_boundary(lines)
 
     task_idx = find_task_line(lines, task_name, end_idx=done_section)
     if task_idx is None:
@@ -4359,7 +4305,7 @@ def update_core_file_priority(task_name, new_pri, now, week=None):
         lines = core_path.read_text().split("\n")
     except FileNotFoundError:
         return
-    done_section = _done_boundary(lines, len(lines))
+    done_section = tasklib.done_boundary(lines)
     all_emojis = set(PRI_EMOJI.values())
     new_emoji = PRI_EMOJI.get(new_pri)
     i = find_task_line(lines, task_name, end_idx=done_section)
@@ -4449,7 +4395,7 @@ def sync_core_file_order(data):
         lines = core_path.read_text().split("\n")
     except FileNotFoundError:
         return
-    done_idx = _done_boundary(lines, len(lines))
+    done_idx = tasklib.done_boundary(lines)
 
     # Ordered task names from JSON
     ordered_names = [
@@ -4463,7 +4409,7 @@ def sync_core_file_order(data):
 
     def find_and_claim(name, remaining):
         for i, l in enumerate(remaining):
-            extracted = _extract_task_name(l)
+            extracted = tasklib.task_name(l)
             if extracted and extracted.lower() == name:
                 return remaining.pop(i)
         return None
@@ -4552,7 +4498,7 @@ def apply_uncomplete(num):
     except FileNotFoundError:
         lines = None
     if lines is not None:
-        done_section = _done_boundary(lines, len(lines))
+        done_section = tasklib.done_boundary(lines)
         emoji_to_pri = {v: k for k, v in PRI_EMOJI.items()}
         # Search the Done area only, then translate back to a global index.
         rel_idx = find_task_line(lines[done_section:], task_name, marker="[x]")
@@ -4573,7 +4519,7 @@ def apply_uncomplete(num):
             # Remove empty heading if no tasks remain under it
             # (leave cleanup to next tk run)
             # Insert restored line at top of active area (before ## Done)
-            done_section = _done_boundary(lines, len(lines))
+            done_section = tasklib.done_boundary(lines)
             lines.insert(done_section, restored)
             _atomic_write_text(core_path, "\n".join(lines))
 
@@ -4706,7 +4652,7 @@ def apply_cancel(task_id):
         except FileNotFoundError:
             lines = None
         if lines is not None:
-            done_section = _done_boundary(lines, len(lines))
+            done_section = tasklib.done_boundary(lines)
             task_idx = find_task_line(lines, task_name, end_idx=done_section)
             if task_idx is not None:
                 original = lines[task_idx]
@@ -4738,7 +4684,7 @@ def update_core_file_name(old_name, new_name, week=None, pri=None):
         lines = core_path.read_text().split("\n")
     except FileNotFoundError:
         return
-    done_section = _done_boundary(lines, len(lines))
+    done_section = tasklib.done_boundary(lines)
     expected_emoji = PRI_EMOJI.get(pri) if pri else None
 
     # Find the matching line; prefer an exact (name + priority emoji) match
@@ -4749,7 +4695,7 @@ def update_core_file_name(old_name, new_name, week=None, pri=None):
         stripped = line.strip()
         if not stripped.startswith("- ["):
             continue
-        if _extract_task_name(line) != old_name:
+        if tasklib.task_name(line) != old_name:
             continue
         if expected_emoji and expected_emoji in line:
             target_idx = i
@@ -4770,7 +4716,7 @@ def update_core_file_name(old_name, new_name, week=None, pri=None):
             emoji_prefix = emoji + " "
             rest = rest[len(emoji) + 1:]
             break
-    cut = _TASK_NAME_BOUNDARY.search(rest)
+    cut = tasklib._TASK_NAME_BOUNDARY.search(rest)
     suffix = rest[cut.start():] if cut else ""
     lines[i] = m.group(1) + emoji_prefix + new_name + suffix
     _atomic_write_text(core_path, "\n".join(lines))
@@ -4795,7 +4741,7 @@ def update_core_file_task(old_name, old_pri, new_name, new_pri,
         lines = core_path.read_text().split("\n")
     except FileNotFoundError:
         return
-    done_section = _done_boundary(lines, len(lines))
+    done_section = tasklib.done_boundary(lines)
     expected_emoji = PRI_EMOJI.get(old_pri) if old_pri else None
 
     # Prefer name+emoji match (disambiguates duplicate names across priorities).
@@ -4804,7 +4750,7 @@ def update_core_file_task(old_name, old_pri, new_name, new_pri,
     for i, line in enumerate(lines[:done_section]):
         if not line.strip().startswith("- ["):
             continue
-        if _extract_task_name(line) != old_name:
+        if tasklib.task_name(line) != old_name:
             continue
         if expected_emoji and expected_emoji in line:
             target_idx = i
@@ -5004,7 +4950,7 @@ def apply_uncancel(task_id):
                 restored = re.sub(r"\s*_\(cancelled:[^)]+\)_", "", restored)
                 lines.pop(idx)
                 # Insert before ## Done
-                done_section = _done_boundary(lines, len(lines))
+                done_section = tasklib.done_boundary(lines)
                 lines.insert(done_section, restored)
                 wrote = True
         if wrote:
@@ -5031,10 +4977,10 @@ def _save_state(data, now=None):
     """Stamp `updated` and persist `data` to tasks-live.json. Notifies SSE
     clients directly so click-driven mutations push instantly without
     waiting for the polling watcher.
-    Atomic write via _atomic_write_json — a partial write is never observed,
+    Atomic write via _atomic_write_text — a partial write is never observed,
     even if the process crashes mid-flush."""
     data["updated"] = (now or datetime.datetime.now()).strftime("%Y-%m-%d %H:%M")
-    _atomic_write_json(JSON_FILE, data)
+    _atomic_write_text(JSON_FILE, json.dumps(data, ensure_ascii=False, indent=2))
     _bump_state_version()
 
 
@@ -5162,7 +5108,7 @@ def add_to_core_file(name, pri, due, why, links, week=None):
         task_line += f" ({link_strs})"
     if why and why not in ("—", "\u2014"):
         task_line += f" _(why: {why})_"
-    done_section = _done_boundary(lines, len(lines))
+    done_section = tasklib.done_boundary(lines)
     lines.insert(done_section, task_line)
     _atomic_write_text(core_path, "\n".join(lines))
 

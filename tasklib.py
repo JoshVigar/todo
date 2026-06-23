@@ -8,18 +8,6 @@ import re
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-STATUS_MAP = {
-    "waiting":          "⏳ Waiting",
-    "waiting_support":  "⏳ Waiting for support",
-    "waiting_customer": "⏳ Waiting for customer",
-    "in_progress":      "🔄 In Progress",
-    "blocked":          "🚫 Blocked",
-    "todo":             "📋 To Do",
-    "open":             "🔓 Open",
-    "done":             "✅ Done",
-    "replied":          "💬 Replied",
-}
-
 MARKER_TO_STATUS = {
     "[ ]": None,       # open/unset — use Jira/Slack or default to "open"
     "[-]": "in_progress",
@@ -87,7 +75,6 @@ def parse_task_line(line):
             break
 
     # Task name: everything before the first metadata boundary (— or ( or _()
-    # This matches serve-tasks.py's _extract_task_name approach.
     cut = _TASK_NAME_BOUNDARY.search(body)
     task_name = (body[:cut.start()] if cut else body).rstrip()
     # Metadata portion (everything after the name boundary)
@@ -128,6 +115,12 @@ def parse_task_line(line):
         "completed_time": completed_time,
         "raw_line": line,
     }
+
+
+def task_name(line):
+    """Extract just the task name from a core-file line, or None."""
+    p = parse_task_line(line)
+    return p["task"] if p else None
 
 
 # ── Section helpers ──────────────────────────────────────────────────────────
